@@ -22,8 +22,8 @@ if "logged_in" not in st.session_state:
     st.session_state.user_role = ""
     st.session_state.username = ""
 
-# --- INIT CLIENTS (GPT, Gemini, OpenRouter) ---
-clients = logic.init_clients() # Returns tuple
+# --- INIT CLIENTS ---
+clients = logic.init_clients()
 
 # ==========================================
 # LOGIN SCREEN
@@ -49,17 +49,17 @@ if not st.session_state.logged_in:
 # MAIN APP
 # ==========================================
 else:
+    # --- DYNAMIC SIDEBAR ---
     with st.sidebar:
         st.markdown("### ⚡ HOB OS")
         st.caption(f"Operator: **{st.session_state.username}**")
         st.divider()
         
-        # --- DYNAMIC MARKETPLACE SELECTOR ---
         st.subheader("📍 Target")
         
         # 1. Fetch existing MPs from DB
         mp_options = db.get_all_marketplaces()
-        mp_options.append("➕ New Marketplace") # Add option to create new
+        mp_options.append("➕ New Marketplace")
         
         # 2. Render Dropdown
         selected_mp_raw = st.selectbox("Marketplace", mp_options)
@@ -70,7 +70,7 @@ else:
             if new_mp_name:
                 selected_mp = new_mp_name.strip()
             else:
-                selected_mp = None # Block execution until name is typed
+                selected_mp = None 
         else:
             selected_mp = selected_mp_raw
 
@@ -87,13 +87,18 @@ else:
         
         if st.button("Log Out", use_container_width=True): 
             st.session_state.logged_in = False; st.rerun()
+
     tab_run, tab_setup, tab_tools, tab_admin = st.tabs(["🚀 Command", "⚙️ Config", "🛠️ Utilities", "👥 Admin"])
 
     # === TAB 1: RUN ===
     with tab_run:
         with st.expander("📂 **Input & Configuration**", expanded=True):
+            if not selected_mp:
+                st.info("👈 Please select a Marketplace in the sidebar.")
+                st.stop()
+                
             if not mp_cats: 
-                st.warning("⚠️ No categories found.")
+                st.warning(f"⚠️ No categories found for {selected_mp}. Go to 'Config' tab to add one.")
                 st.stop()
             
             c_conf1, c_conf2 = st.columns([1, 1])
@@ -126,7 +131,7 @@ else:
             with c_set2: arch_mode = st.selectbox("Engine", [
                 "🚀 Economy (DeepSeek)", 
                 "💎 Precision (Claude 3.5)", 
-                "🛡️ Eagle-Eye Dual (Gemini + Claude)",  # <--- NEW BEST COMBO
+                "🛡️ Eagle-Eye Dual (Gemini + Claude)", 
                 "🛡️ Dual-AI Audit (Gemini + GPT-4o)", 
                 "⚖️ Standard (Gemini)", 
                 "🧠 Logic Pro (GPT-4o)"
@@ -146,7 +151,7 @@ else:
             
             st.divider()
             
-            # --- ALPHA ARENA UI: KPI CARDS ---
+            # --- KPI CARDS ---
             st.markdown("### 📊 Engine Status")
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -164,7 +169,6 @@ else:
                 status_placeholder = st.empty() 
                 results_container = st.container()
 
-                # 1. GROUPING LOGIC (Deduplication)
                 grouped = valid_rows.groupby(img_col)
                 unique_urls = list(grouped.groups.keys())
                 
@@ -172,15 +176,12 @@ else:
                 total_rows = len(valid_rows)
                 completed_unique = 0
                 
-                ai_cache = {} # Stores { "http://image-url": {AI JSON Data} }
-                
-                # 2. Prepare Tasks (Only 1 row per unique image)
+                ai_cache = {} 
                 tasks = []
                 for url, group in grouped:
                     driver_row = group.iloc[0] 
                     tasks.append(driver_row)
 
-                # 3. Process Unique Images
                 with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
                     future_to_url = {
                         executor.submit(
@@ -199,8 +200,6 @@ else:
                             res = future.result()
                             if res['success']:
                                 ai_cache[url_key] = res['ai_data']
-                                
-                                # UI Feedback (Alpha Arena Style)
                                 with results_container:
                                     with st.container():
                                         c_img, c_info = st.columns([1, 4])
@@ -208,31 +207,24 @@ else:
                                             if res['img_display']: st.image(res['img_display'], width=60)
                                         with c_info:
                                             affected_skus = grouped.get_group(url_key)[sku_col].tolist()
-                                            
-                                            # NEW: Success Badge
                                             ui.status_badge(f"Auto-Synced {len(affected_skus)} Sizes", "success")
-                                            
                                             st.caption(f"SKUs: {', '.join(map(str, affected_skus))}")
                                         st.divider()
                             else:
-                                # NEW: Error Badge
                                 ui.status_badge(f"Failed: {res['error']}", "error")
                                 
                         except Exception as exc:
                             st.error(f"System Error on {url_key}: {exc}")
                 
-                # 4. BROADCAST RESULTS (Copy AI data to all sizes)
                 status_placeholder.info("🔄 Syncing data across sizes...")
                 final_output_rows = []
                 
                 for idx, row in valid_rows.iterrows():
                     u_key = str(row[img_col]).strip()
                     if u_key in ai_cache:
-                        # Success: Merge AI data
                         final_row = logic.merge_ai_data_to_row(row, ai_cache[u_key], config)
                         final_output_rows.append(final_row)
                     else:
-                        # Failure: Merge empty data (keeps original row data)
                         final_row = logic.merge_ai_data_to_row(row, {}, config)
                         final_output_rows.append(final_row)
 
@@ -257,10 +249,10 @@ else:
         if not selected_mp:
             st.warning("👈 Please enter a Marketplace Name in the sidebar.")
             st.stop()
-            
+
         st.header(f"⚙️ {selected_mp} Config")
         
-        # If it's a new MP, force "New Category" mode visually
+        # New MP Handling
         if not mp_cats:
             st.info(f"✨ '{selected_mp}' is new! Create your first category below.")
             mode = "New Category" 
@@ -269,22 +261,21 @@ else:
             
         cat_name = ""; headers = []; master_options = {}; default_mapping = []
 
-        # ... (rest of the code remains exactly the same) ...
-        if mode == "Edit Category":
-            if mp_cats:
-                edit_cat = st.selectbox(f"Select Category", mp_cats)
-                if edit_cat:
-                    loaded = db.load_config(selected_mp, edit_cat)
-                    if loaded:
-                        cat_name = loaded['category_name']; headers = loaded['headers']; master_options = loaded['master_data']
-                        st.caption("SEO Keywords")
-                        curr_kw = db.get_seo(selected_mp, edit_cat)
-                        st.text_area("Keywords", curr_kw, height=60, disabled=True)
-                        kw_file = st.file_uploader("Update Keywords", type=["xlsx"])
-                        if kw_file:
-                             df_kw = pd.read_excel(kw_file)
-                             if db.save_seo(selected_mp, edit_cat, df_kw.iloc[:, 0].dropna().astype(str).tolist()): st.success("Updated")
-        else: cat_name = st.text_input(f"New Category Name")
+        if mode == "Edit Category" and mp_cats:
+            edit_cat = st.selectbox(f"Select Category", mp_cats)
+            if edit_cat:
+                loaded = db.load_config(selected_mp, edit_cat)
+                if loaded:
+                    cat_name = loaded['category_name']; headers = loaded['headers']; master_options = loaded['master_data']
+                    st.caption("SEO Keywords")
+                    curr_kw = db.get_seo(selected_mp, edit_cat)
+                    st.text_area("Keywords", curr_kw, height=60, disabled=True)
+                    kw_file = st.file_uploader("Update Keywords", type=["xlsx"])
+                    if kw_file:
+                            df_kw = pd.read_excel(kw_file)
+                            if db.save_seo(selected_mp, edit_cat, df_kw.iloc[:, 0].dropna().astype(str).tolist()): st.success("Updated")
+        else: 
+            cat_name = st.text_input(f"New Category Name")
 
         c1, c2 = st.columns(2)
         template_file = c1.file_uploader("Marketplace Template", type=["xlsx"], key="templ")
