@@ -70,13 +70,18 @@ else:
             new_mp_name = st.text_input("Enter Name", placeholder="e.g. Snapdeal")
             if new_mp_name:
                 selected_mp = new_mp_name.strip()
+            else:
+                st.caption("👈 Type name & press Enter")
         else:
             selected_mp = selected_mp_raw
 
+        # 4. Safe Fetch Categories
+        mp_cats = []
         if selected_mp:
-            mp_cats = db.get_categories_for_marketplace(selected_mp)
-        else:
-            mp_cats = []
+            try:
+                mp_cats = db.get_categories_for_marketplace(selected_mp)
+            except:
+                mp_cats = []
         
         concurrency_limit = 3 
         if st.session_state.user_role == 'admin':
@@ -93,7 +98,10 @@ else:
     with tab_run:
         with st.expander("📂 **Input & Configuration**", expanded=True):
             if not selected_mp:
-                st.info("👈 Please select a Marketplace in the sidebar.")
+                if selected_mp_raw == "➕ New Marketplace":
+                    st.info("👈 Please type the new Marketplace Name in the sidebar and press ENTER.")
+                else:
+                    st.info("👈 Please select a Marketplace in the sidebar.")
                 st.stop()
                 
             if not mp_cats: 
@@ -245,30 +253,32 @@ else:
 
     # === TAB 2: SETUP (FIXED) ===
     with tab_setup:
-        # 1. Guard Clauses
+        # Guard: Check if MP is selected
         if not selected_mp:
-            st.warning("👈 Please enter a Marketplace Name in the sidebar.")
+            if selected_mp_raw == "➕ New Marketplace":
+                st.info("👈 Please type the new Marketplace Name in the sidebar and press ENTER.")
+            else:
+                st.warning("👈 Please select a Marketplace in the sidebar.")
             st.stop()
 
         st.header(f"⚙️ {selected_mp} Config")
         
-        # 2. Determine Mode (Linear Logic)
-        mode = "New Category" # Default
+        # Determine Mode
+        mode = "New Category"
         if mp_cats:
-            # If categories exist, allow user to switch modes
             if st.radio("Action", ["New Category", "Edit Category"], horizontal=True) == "Edit Category":
                 mode = "Edit Category"
         else:
-            # If no categories, force New Category and show hint
             st.info(f"✨ '{selected_mp}' is new! Create your first category below.")
             
-        # 3. Render Inputs based on Mode
+        # Initialize Variables
         cat_name = ""
         headers = []
         master_options = {}
         loaded = None
         
-        if mode == "Edit Category":
+        # Mode Logic
+        if mode == "Edit Category" and mp_cats:
             edit_cat = st.selectbox(f"Select Category", mp_cats)
             if edit_cat:
                 loaded = db.load_config(selected_mp, edit_cat)
@@ -285,20 +295,17 @@ else:
                             df_kw = pd.read_excel(kw_file)
                             if db.save_seo(selected_mp, edit_cat, df_kw.iloc[:, 0].dropna().astype(str).tolist()): st.success("Updated")
         else:
-            # NEW CATEGORY MODE
+            # NEW CATEGORY INPUT
             cat_name = st.text_input(f"New Category Name", key="new_cat_input")
 
-        # 4. Common Uploaders (Always Visible)
         st.divider()
         c1, c2 = st.columns(2)
         template_file = c1.file_uploader("Marketplace Template", type=["xlsx"], key="templ")
         master_file = c2.file_uploader("Master Data", type=["xlsx"], key="mast")
 
-        # 5. Process Files
         if template_file: headers = pd.read_excel(template_file).columns.tolist()
         if master_file: master_options = logic.parse_master_data(master_file)
 
-        # 6. Render Mapping Table & Save Button
         if headers:
             st.divider()
             default_mapping = []
