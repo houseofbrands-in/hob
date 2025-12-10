@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ui.styles import load_custom_css
 import core.database as db
 import core.logic as logic
+import ui.components as ui  # <--- ADD THIS
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="HOB OS - Enterprise", layout="wide", page_icon="⚡")
@@ -115,12 +116,14 @@ else:
             df_to_proc[img_col] = df_to_proc[img_col].astype(str).str.strip()
             valid_rows = df_to_proc[df_to_proc[img_col].notna() & (df_to_proc[img_col] != "")]
             
-            st.divider()
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Queue", len(valid_rows))
-            m2.metric("Workers", concurrency_limit)
-            m3.metric("Est. Time", f"~{int(len(valid_rows)/concurrency_limit * 12)}s")
-            
+            st.markdown("### 📊 Engine Status")
+c1, c2, c3 = st.columns(3)
+with c1:
+    ui.kpi_card("Queue Depth", f"{len(valid_rows)} SKUs", icon="📦", color="blue")
+with c2:
+    ui.kpi_card("Threads Active", f"{concurrency_limit} Cores", icon="⚡", color="purple")
+with c3:
+    ui.kpi_card("Est. Time", f"~{int(len(valid_rows)/concurrency_limit * 12)}s", icon="⏱️", color="green")            
             # --- START ENGINE BLOCK ---
             if st.button("▶️ START ENGINE", type="primary", use_container_width=True):
                 st.session_state.gen_results = []
@@ -165,19 +168,24 @@ else:
                             if res['success']:
                                 ai_cache[url_key] = res['ai_data']
                                 
-                                # UI Feedback (Show once per image)
+                              # UI Feedback (Alpha Arena Style)
                                 with results_container:
                                     with st.container():
                                         c_img, c_info = st.columns([1, 4])
                                         with c_img:
-                                            if res['img_display']: st.image(res['img_display'], width=60)
+                                            if res['img_display']: 
+                                                st.image(res['img_display'], width=60)
                                         with c_info:
                                             affected_skus = grouped.get_group(url_key)[sku_col].tolist()
-                                            st.caption(f"Completed for {len(affected_skus)} variants")
-                                            st.write(f"`{', '.join(map(str, affected_skus))}`")
+                                            
+                                            # NEW: Use the Badge Component here
+                                            ui.status_badge(f"Auto-Synced {len(affected_skus)} Sizes", "success")
+                                            
+                                            st.caption(f"SKUs: {', '.join(map(str, affected_skus))}")
                                         st.divider()
                             else:
-                                st.error(f"Failed {url_key}: {res['error']}")
+                                # NEW: Error Badge
+                                ui.status_badge(f"Failed: {res['error']}", "error")
                                 
                         except Exception as exc:
                             st.error(f"System Error on {url_key}: {exc}")
