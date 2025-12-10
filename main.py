@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ui.styles import load_custom_css
 import core.database as db
 import core.logic as logic
-import ui.components as ui  # <--- UI COMPONENT LIBRARY
+import ui.components as ui 
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="HOB OS - Enterprise", layout="wide", page_icon="⚡")
@@ -22,10 +22,8 @@ if "logged_in" not in st.session_state:
     st.session_state.user_role = ""
     st.session_state.username = ""
 
-# --- INIT CLIENTS ---
-client, gemini_avail = logic.init_clients()
-if not client and "GPT" in st.secrets.get("active_modes", ""):
-    st.error("❌ OpenAI Key Missing")
+# --- INIT CLIENTS (GPT, Gemini, OpenRouter) ---
+clients = logic.init_clients() # Returns tuple
 
 # ==========================================
 # LOGIN SCREEN
@@ -102,7 +100,15 @@ else:
             st.markdown("#### ⚙️ Execution")
             c_set1, c_set2, c_set3, c_set4 = st.columns(4)
             with c_set1: run_mode = st.selectbox("Scope", ["🧪 Test (3 Rows)", "🚀 Full Batch"])
-            with c_set2: arch_mode = st.selectbox("Engine", ["✨ Dual-AI (Best)", "⚡ Gemini Only (Fast)", "🧠 GPT-4o Only (Precise)"])
+            
+            # --- THE 5-WAY ENGINE SELECTOR ---
+            with c_set2: arch_mode = st.selectbox("Engine", [
+                "🚀 Economy (DeepSeek)", 
+                "💎 Precision (Claude 3.5)", 
+                "🛡️ Dual-AI Audit (Best)", 
+                "⚖️ Standard (Gemini)", 
+                "🧠 Logic Pro (GPT-4o)"
+            ])
             
             with c_set3:
                 all_cols = df_input.columns.tolist()
@@ -126,7 +132,7 @@ else:
             with c2:
                 ui.kpi_card("Threads Active", f"{concurrency_limit} Cores", icon="⚡", color="purple")
             with c3:
-                ui.kpi_card("Est. Time", f"~{int(len(valid_rows)/concurrency_limit * 12)}s", icon="⏱️", color="green")
+                ui.kpi_card("Engine", arch_mode.split()[1], icon="🧠", color="green")
             
             # --- START ENGINE BLOCK ---
             if st.button("▶️ START ENGINE", type="primary", use_container_width=True):
@@ -157,7 +163,7 @@ else:
                     future_to_url = {
                         executor.submit(
                             logic.process_row_workflow, 
-                            row, img_col, sku_col, config, client, arch_mode, active_kws, selected_mp
+                            row, img_col, sku_col, config, clients, arch_mode, active_kws, selected_mp
                         ): row[img_col] 
                         for row in tasks
                     }
@@ -297,7 +303,7 @@ else:
         if tool_choice == "Lyra Prompt":
             st.caption("Prompt Engineering")
             idea = st.text_area("Concept:")
-            if st.button("✨ Optimize"): st.info(logic.run_lyra_optimization("GPT", idea, client, gemini_avail))
+            if st.button("✨ Optimize"): st.info(logic.run_lyra_optimization("GPT", idea, clients[0], clients[1]))
             
         elif tool_choice == "Vision Guard":
             st.caption("Compliance Check")
