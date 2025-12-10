@@ -20,7 +20,6 @@ except ImportError:
 
 # --- INIT CLIENTS ---
 def init_clients():
-    # Only initializing if keys exist to prevent crashes
     gpt_client = None
     gemini_avail = False
     
@@ -91,7 +90,6 @@ def run_lyra_optimization(model_choice, raw_instruction, client, gemini_avail):
 
 # --- UNIFIED AI ANALYSIS ---
 def analyze_image_unified(client, base64_image, user_hints, keywords, config, marketplace, mode="Dual-AI"):
-    # Check availability locally within function to ensure latest status
     _, gemini_avail = init_clients() 
     
     target_columns = []
@@ -137,7 +135,6 @@ def analyze_image_unified(client, base64_image, user_hints, keywords, config, ma
             if "```json" in text_out: text_out = text_out.split("```json")[1].split("```")[0]
             elif "```" in text_out: text_out = text_out.split("```")[1].split("```")[0]
             maker_draft = json.loads(text_out)
-            
             if "Gemini" in mode: return maker_draft, None 
 
         except Exception as e:
@@ -177,11 +174,51 @@ def analyze_image_unified(client, base64_image, user_hints, keywords, config, ma
     
     return None, "Invalid Mode"
 
+# --- HELPER: MERGE AI DATA INTO ROW ---
+# This allows us to reuse the AI result for multiple rows (S, M, L)
+def merge_ai_data_to_row(row_data, ai_data, config):
+    new_row = {}
+    mapping = config['column_mapping']
+    
+    for col in config['headers']:
+        rule = mapping.get(col, {'source': 'BLANK'})
+        val = ""
+        
+        # SOURCE: INPUT (Grab from Excel, e.g. SKU or Size)
+        if rule['source'] == 'INPUT': 
+            val = row_data.get(col, "")
+            
+        # SOURCE: FIXED
+        elif rule['source'] == 'FIXED': 
+            val = rule['value']
+            
+        # SOURCE: AI (Use the cached AI data)
+        elif rule['source'] == 'AI' and ai_data:
+            if col in ai_data: val = ai_data[col]
+            else: 
+                clean_col = col.lower().replace(" ", "").replace("_", "")
+                for k,v in ai_data.items():
+                    if k.lower().replace(" ", "") in clean_col: val = v; break
+            
+            # Apply Master Data Constraints
+            m_list = []
+            for mc, opts in config['master_data'].items():
+                if mc.lower() in col.lower(): m_list = opts; break
+            if m_list and val: val = enforce_master_data_fallback(val, m_list)
+        
+        # Formatting
+        if isinstance(val, (list, tuple)): val = ", ".join(map(str, val))
+        elif isinstance(val, dict): val = json.dumps(val)
+        val = str(val).strip()
+        if rule.get('max_len'): val = smart_truncate(val, int(float(rule['max_len'])))
+        new_row[col] = val
+        
+    return new_row
+
 # --- WORKER ---
 def process_row_workflow(row_data, img_col, sku_col, config, client, arch_mode, active_kws, selected_mp):
     u_key = str(row_data.get(img_col, "")).strip()
     sku_label = str(row_data.get(sku_col, "Unknown SKU"))
-    mapping = config['column_mapping']
     
     result_package = {
         "success": False,
@@ -193,6 +230,7 @@ def process_row_workflow(row_data, img_col, sku_col, config, client, arch_mode, 
         "error": None
     }
     
+    # 1. Download Image
     download_url = u_key 
     if "dropbox.com" in download_url: 
         download_url = download_url.replace("?dl=0", "").replace("&dl=0", "") + "&dl=1"
@@ -210,15 +248,16 @@ def process_row_workflow(row_data, img_col, sku_col, config, client, arch_mode, 
         result_package["error"] = f"Network Error: {str(e)}"
         return result_package
 
+    # 2. Hints
     hints = "Product analysis."
     try:
         hints = ", ".join([f"{k}: {v}" for k,v in row_data.items() if k != img_col and str(v).lower() != "nan"])
         hints = smart_truncate(hints, 300)
     except: pass
 
+    # 3. AI Execution
     ai_data = {}
     err = None
-    
     mode_arg = "Dual-AI"
     if "Gemini" in arch_mode: mode_arg = "Gemini"
     elif "GPT" in arch_mode: mode_arg = "GPT"
@@ -243,28 +282,7 @@ def process_row_workflow(row_data, img_col, sku_col, config, client, arch_mode, 
     result_package["ai_data"] = ai_data
     result_package["success"] = True
 
-    new_row = {}
-    for col in config['headers']:
-        rule = mapping.get(col, {'source': 'BLANK'})
-        val = ""
-        if rule['source'] == 'INPUT': val = row_data.get(col, "")
-        elif rule['source'] == 'FIXED': val = rule['value']
-        elif rule['source'] == 'AI' and ai_data:
-            if col in ai_data: val = ai_data[col]
-            else: 
-                clean_col = col.lower().replace(" ", "").replace("_", "")
-                for k,v in ai_data.items():
-                    if k.lower().replace(" ", "") in clean_col: val = v; break
-            m_list = []
-            for mc, opts in config['master_data'].items():
-                if mc.lower() in col.lower(): m_list = opts; break
-            if m_list and val: val = enforce_master_data_fallback(val, m_list)
-        
-        if isinstance(val, (list, tuple)): val = ", ".join(map(str, val))
-        elif isinstance(val, dict): val = json.dumps(val)
-        val = str(val).strip()
-        if rule.get('max_len'): val = smart_truncate(val, int(float(rule['max_len'])))
-        new_row[col] = val
+    # 4. Construct Row (Using the new helper)
+    result_package["final_row"] = merge_ai_data_to_row(row_data, ai_data, config)
     
-    result_package["final_row"] = new_row
     return result_package
