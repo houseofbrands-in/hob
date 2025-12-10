@@ -65,12 +65,11 @@ else:
         selected_mp_raw = st.selectbox("Marketplace", mp_options)
         
         # 3. Handle "New" Input
+        selected_mp = None
         if selected_mp_raw == "➕ New Marketplace":
             new_mp_name = st.text_input("Enter Name", placeholder="e.g. Snapdeal")
             if new_mp_name:
                 selected_mp = new_mp_name.strip()
-            else:
-                selected_mp = None 
         else:
             selected_mp = selected_mp_raw
 
@@ -98,7 +97,7 @@ else:
                 st.stop()
                 
             if not mp_cats: 
-                st.warning(f"⚠️ No categories found for {selected_mp}. Go to 'Config' tab to add one.")
+                st.warning(f"⚠️ '{selected_mp}' has no categories yet. Go to the 'Config' tab to create one.")
                 st.stop()
             
             c_conf1, c_conf2 = st.columns([1, 1])
@@ -244,29 +243,40 @@ else:
                     final_df.to_excel(writer, index=False)
                 st.download_button("⬇️ Download Excel", output_gen.getvalue(), file_name=f"Result_{selected_mp}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
 
-    # === TAB 2: SETUP ===
+    # === TAB 2: SETUP (FIXED) ===
     with tab_setup:
+        # 1. Guard Clauses
         if not selected_mp:
             st.warning("👈 Please enter a Marketplace Name in the sidebar.")
             st.stop()
 
         st.header(f"⚙️ {selected_mp} Config")
         
-        # New MP Handling
-        if not mp_cats:
-            st.info(f"✨ '{selected_mp}' is new! Create your first category below.")
-            mode = "New Category" 
+        # 2. Determine Mode (Linear Logic)
+        mode = "New Category" # Default
+        if mp_cats:
+            # If categories exist, allow user to switch modes
+            if st.radio("Action", ["New Category", "Edit Category"], horizontal=True) == "Edit Category":
+                mode = "Edit Category"
         else:
-            mode = st.radio("Action", ["New Category", "Edit Category"], horizontal=True)
+            # If no categories, force New Category and show hint
+            st.info(f"✨ '{selected_mp}' is new! Create your first category below.")
             
-        cat_name = ""; headers = []; master_options = {}; default_mapping = []
-
-        if mode == "Edit Category" and mp_cats:
+        # 3. Render Inputs based on Mode
+        cat_name = ""
+        headers = []
+        master_options = {}
+        loaded = None
+        
+        if mode == "Edit Category":
             edit_cat = st.selectbox(f"Select Category", mp_cats)
             if edit_cat:
                 loaded = db.load_config(selected_mp, edit_cat)
                 if loaded:
-                    cat_name = loaded['category_name']; headers = loaded['headers']; master_options = loaded['master_data']
+                    cat_name = loaded['category_name']
+                    headers = loaded['headers']
+                    master_options = loaded['master_data']
+                    
                     st.caption("SEO Keywords")
                     curr_kw = db.get_seo(selected_mp, edit_cat)
                     st.text_area("Keywords", curr_kw, height=60, disabled=True)
@@ -274,18 +284,24 @@ else:
                     if kw_file:
                             df_kw = pd.read_excel(kw_file)
                             if db.save_seo(selected_mp, edit_cat, df_kw.iloc[:, 0].dropna().astype(str).tolist()): st.success("Updated")
-        else: 
-            cat_name = st.text_input(f"New Category Name")
+        else:
+            # NEW CATEGORY MODE
+            cat_name = st.text_input(f"New Category Name", key="new_cat_input")
 
+        # 4. Common Uploaders (Always Visible)
+        st.divider()
         c1, c2 = st.columns(2)
         template_file = c1.file_uploader("Marketplace Template", type=["xlsx"], key="templ")
         master_file = c2.file_uploader("Master Data", type=["xlsx"], key="mast")
 
+        # 5. Process Files
         if template_file: headers = pd.read_excel(template_file).columns.tolist()
         if master_file: master_options = logic.parse_master_data(master_file)
 
+        # 6. Render Mapping Table & Save Button
         if headers:
             st.divider()
+            default_mapping = []
             if not default_mapping:
                 for h in headers:
                     src = "Leave Blank"; h_low = h.lower()
@@ -307,17 +323,23 @@ else:
             edited_df = st.data_editor(pd.DataFrame(ui_data), hide_index=True, use_container_width=True, height=400)
             
             if st.button("💾 Save Config", type="primary"):
-                final_map = {}
-                for i, row in edited_df.iterrows():
-                    src_code = "AI" if row['Source'] == "AI Generation" else "INPUT" if row['Source'] == "Input Excel" else "FIXED" if row['Source'] == "Fixed Value" else "BLANK"
-                    m_len = row['Max Chars']
-                    if pd.isna(m_len) or str(m_len).strip() == "" or str(m_len).strip() == "0": m_len = ""
-                    else:
-                        try: m_len = int(float(m_len))
-                        except: m_len = ""
-                    final_map[row['Column Name']] = {"source": src_code, "value": row['Fixed Value'], "max_len": m_len, "prompt_style": row['AI Style'], "custom_prompt": row['Custom Prompt']}
-                if db.save_config(selected_mp, cat_name, {"category_name": cat_name, "headers": headers, "master_data": master_options, "column_mapping": final_map}):
-                    st.success("✅ Saved!"); time.sleep(1); st.rerun()
+                if not cat_name:
+                    st.error("Please enter a category name.")
+                else:
+                    final_map = {}
+                    for i, row in edited_df.iterrows():
+                        src_code = "AI" if row['Source'] == "AI Generation" else "INPUT" if row['Source'] == "Input Excel" else "FIXED" if row['Source'] == "Fixed Value" else "BLANK"
+                        m_len = row['Max Chars']
+                        if pd.isna(m_len) or str(m_len).strip() == "" or str(m_len).strip() == "0": m_len = ""
+                        else:
+                            try: m_len = int(float(m_len))
+                            except: m_len = ""
+                        final_map[row['Column Name']] = {"source": src_code, "value": row['Fixed Value'], "max_len": m_len, "prompt_style": row['AI Style'], "custom_prompt": row['Custom Prompt']}
+                    
+                    if db.save_config(selected_mp, cat_name, {"category_name": cat_name, "headers": headers, "master_data": master_options, "column_mapping": final_map}):
+                        st.success(f"✅ Saved '{cat_name}' to {selected_mp}!"); 
+                        time.sleep(1); 
+                        st.rerun()
 
     # === TAB 3: UTILITIES ===
     with tab_tools:
