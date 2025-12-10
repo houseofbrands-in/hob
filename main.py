@@ -53,9 +53,31 @@ else:
         st.markdown("### ⚡ HOB OS")
         st.caption(f"Operator: **{st.session_state.username}**")
         st.divider()
+        
+        # --- DYNAMIC MARKETPLACE SELECTOR ---
         st.subheader("📍 Target")
-        selected_mp = st.selectbox("Marketplace", ["Myntra", "Flipkart", "Ajio", "Amazon", "Nykaa"])
-        mp_cats = db.get_categories_for_marketplace(selected_mp)
+        
+        # 1. Fetch existing MPs from DB
+        mp_options = db.get_all_marketplaces()
+        mp_options.append("➕ New Marketplace") # Add option to create new
+        
+        # 2. Render Dropdown
+        selected_mp_raw = st.selectbox("Marketplace", mp_options)
+        
+        # 3. Handle "New" Input
+        if selected_mp_raw == "➕ New Marketplace":
+            new_mp_name = st.text_input("Enter Name", placeholder="e.g. Snapdeal")
+            if new_mp_name:
+                selected_mp = new_mp_name.strip()
+            else:
+                selected_mp = None # Block execution until name is typed
+        else:
+            selected_mp = selected_mp_raw
+
+        if selected_mp:
+            mp_cats = db.get_categories_for_marketplace(selected_mp)
+        else:
+            mp_cats = []
         
         concurrency_limit = 3 
         if st.session_state.user_role == 'admin':
@@ -65,7 +87,6 @@ else:
         
         if st.button("Log Out", use_container_width=True): 
             st.session_state.logged_in = False; st.rerun()
-
     tab_run, tab_setup, tab_tools, tab_admin = st.tabs(["🚀 Command", "⚙️ Config", "🛠️ Utilities", "👥 Admin"])
 
     # === TAB 1: RUN ===
@@ -233,10 +254,22 @@ else:
 
     # === TAB 2: SETUP ===
     with tab_setup:
+        if not selected_mp:
+            st.warning("👈 Please enter a Marketplace Name in the sidebar.")
+            st.stop()
+            
         st.header(f"⚙️ {selected_mp} Config")
-        mode = st.radio("Action", ["New Category", "Edit Category"], horizontal=True)
+        
+        # If it's a new MP, force "New Category" mode visually
+        if not mp_cats:
+            st.info(f"✨ '{selected_mp}' is new! Create your first category below.")
+            mode = "New Category" 
+        else:
+            mode = st.radio("Action", ["New Category", "Edit Category"], horizontal=True)
+            
         cat_name = ""; headers = []; master_options = {}; default_mapping = []
 
+        # ... (rest of the code remains exactly the same) ...
         if mode == "Edit Category":
             if mp_cats:
                 edit_cat = st.selectbox(f"Select Category", mp_cats)
