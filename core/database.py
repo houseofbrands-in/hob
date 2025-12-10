@@ -107,3 +107,20 @@ def get_seo(marketplace, category):
         if len(row) > 2 and row[0] == marketplace and row[1] == category:
             return row[2]
     return ""
+
+def get_all_marketplaces():
+    """
+    Fetches unique Marketplaces from the Configs sheet.
+    Merges them with a default list to ensure the app doesn't look empty on fresh install.
+    """
+    defaults = ["Myntra", "Flipkart", "Ajio", "Amazon", "Nykaa"]
+    try:
+        rows = get_worksheet_data(SHEET_NAME, "Configs")
+        # Column 0 is Marketplace. Skip header (row 0).
+        db_mps = [r[0] for r in rows[1:] if r and len(r) > 0 and r[0].strip() != ""]
+        
+        # Combine defaults with DB values, remove duplicates, and sort
+        combined = sorted(list(set(defaults + db_mps)))
+        return combined
+    except:
+        return defaults
