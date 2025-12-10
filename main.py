@@ -101,11 +101,12 @@ else:
             c_set1, c_set2, c_set3, c_set4 = st.columns(4)
             with c_set1: run_mode = st.selectbox("Scope", ["🧪 Test (3 Rows)", "🚀 Full Batch"])
             
-            # --- THE 5-WAY ENGINE SELECTOR ---
+            # --- THE 6-WAY ENGINE SELECTOR ---
             with c_set2: arch_mode = st.selectbox("Engine", [
                 "🚀 Economy (DeepSeek)", 
                 "💎 Precision (Claude 3.5)", 
-                "🛡️ Dual-AI Audit (Best)", 
+                "🛡️ Eagle-Eye Dual (Gemini + Claude)",  # <--- NEW BEST COMBO
+                "🛡️ Dual-AI Audit (Gemini + GPT-4o)", 
                 "⚖️ Standard (Gemini)", 
                 "🧠 Logic Pro (GPT-4o)"
             ])
