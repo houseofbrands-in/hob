@@ -136,7 +136,7 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
     # --- ROUTING LOGIC ---
 
     # 1. CLAUDE 3.5 SONNET (Vision King)
-    if "Claude" in engine_mode:
+    if "Precision" in engine_mode:
         if not or_c: return None, "OpenRouter Key Missing"
         try:
             response = or_c.chat.completions.create(
@@ -154,8 +154,8 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             return json.loads(txt), None
         except Exception as e: return None, f"Claude Error: {str(e)}"
 
-    # 2. DEEPSEEK V3 (Economy) - Uses Gemini for Vision, DeepSeek for Logic
-    elif "DeepSeek" in engine_mode:
+    # 2. DEEPSEEK V3 (Economy)
+    elif "Economy" in engine_mode:
         if not gemini_avail: return None, "Gemini Key Missing (Required for Vision)"
         if not or_c: return None, "OpenRouter Key Missing"
         try:
@@ -183,9 +183,9 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             return json.loads(txt), None
         except Exception as e: return None, f"DeepSeek Error: {str(e)}"
 
-    # 3. DUAL-AI (The Original Maker-Checker)
-    elif "Dual" in engine_mode:
-        if not gemini_avail or not gpt_c: return None, "Need both Gemini and OpenAI Keys"
+    # 3. EAGLE-EYE DUAL (Gemini + Claude Audit)
+    elif "Eagle-Eye" in engine_mode:
+        if not gemini_avail or not or_c: return None, "Need Gemini and OpenRouter Keys"
         try:
             # Maker (Gemini)
             model = genai.GenerativeModel('gemini-2.5-flash')
@@ -197,7 +197,45 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             elif "```" in maker_txt: maker_txt = maker_txt.split("```")[1].split("```")[0]
             maker_draft = json.loads(maker_txt)
             
-            # Checker (GPT-4o)
+            # Checker (Claude)
+            audit_prompt = f"""
+            You are the QUALITY CONTROL CHIEF.
+            1. Look at the image.
+            2. Review this Draft JSON: {json.dumps(maker_draft)}
+            3. CRITICAL: If the fabric, color, or neck/sleeve type in the Draft does not match the Image perfectly, CORRECT IT.
+            4. Ensure these allowed options are respected: {json.dumps(strict_constraints)}
+            5. Output the cleaned, final JSON.
+            """
+            
+            response = or_c.chat.completions.create(
+                model="anthropic/claude-3.5-sonnet",
+                messages=[
+                    {"role": "user", "content": [
+                        {"type": "text", "text": audit_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]}
+                ],
+                temperature=0.1
+            )
+            txt = response.choices[0].message.content
+            if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
+            return json.loads(txt), None
+            
+        except Exception as e: return None, f"Eagle-Eye Error: {str(e)}"
+
+    # 4. STANDARD DUAL (Gemini + GPT-4o Audit)
+    elif "Dual-AI" in engine_mode:
+        if not gemini_avail or not gpt_c: return None, "Need both Gemini and OpenAI Keys"
+        try:
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            img_data = base64.b64decode(base64_image)
+            image_part = {"mime_type": "image/jpeg", "data": img_data}
+            res = model.generate_content([system_prompt, image_part])
+            maker_txt = res.text
+            if "```json" in maker_txt: maker_txt = maker_txt.split("```json")[1].split("```")[0]
+            elif "```" in maker_txt: maker_txt = maker_txt.split("```")[1].split("```")[0]
+            maker_draft = json.loads(maker_txt)
+            
             audit_prompt = f"""
             You are the AUDITOR.
             Visual Inputs provided.
@@ -217,7 +255,7 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             return json.loads(response.choices[0].message.content), None
         except Exception as e: return None, f"Dual-AI Error: {str(e)}"
 
-    # 4. GPT-4o ONLY
+    # 5. GPT-4o ONLY (Logic Pro) -- [RESTORED]
     elif "GPT" in engine_mode:
         if not gpt_c: return None, "OpenAI Key Missing"
         try:
@@ -232,7 +270,7 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             return json.loads(response.choices[0].message.content), None
         except Exception as e: return None, f"GPT Error: {str(e)}"
 
-    # 5. GEMINI ONLY (Standard)
+    # 6. GEMINI ONLY
     else:
         if not gemini_avail: return None, "Gemini Key Missing"
         try:
