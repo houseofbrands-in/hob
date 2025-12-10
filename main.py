@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ui.styles import load_custom_css
 import core.database as db
 import core.logic as logic
-import ui.components as ui  # <--- ADD THIS
+import ui.components as ui  # <--- UI COMPONENT LIBRARY
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="HOB OS - Enterprise", layout="wide", page_icon="⚡")
@@ -116,14 +116,18 @@ else:
             df_to_proc[img_col] = df_to_proc[img_col].astype(str).str.strip()
             valid_rows = df_to_proc[df_to_proc[img_col].notna() & (df_to_proc[img_col] != "")]
             
+            st.divider()
+            
+            # --- ALPHA ARENA UI: KPI CARDS ---
             st.markdown("### 📊 Engine Status")
-c1, c2, c3 = st.columns(3)
-with c1:
-    ui.kpi_card("Queue Depth", f"{len(valid_rows)} SKUs", icon="📦", color="blue")
-with c2:
-    ui.kpi_card("Threads Active", f"{concurrency_limit} Cores", icon="⚡", color="purple")
-with c3:
-    ui.kpi_card("Est. Time", f"~{int(len(valid_rows)/concurrency_limit * 12)}s", icon="⏱️", color="green")            
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                ui.kpi_card("Queue Depth", f"{len(valid_rows)} SKUs", icon="📦", color="blue")
+            with c2:
+                ui.kpi_card("Threads Active", f"{concurrency_limit} Cores", icon="⚡", color="purple")
+            with c3:
+                ui.kpi_card("Est. Time", f"~{int(len(valid_rows)/concurrency_limit * 12)}s", icon="⏱️", color="green")
+            
             # --- START ENGINE BLOCK ---
             if st.button("▶️ START ENGINE", type="primary", use_container_width=True):
                 st.session_state.gen_results = []
@@ -168,17 +172,16 @@ with c3:
                             if res['success']:
                                 ai_cache[url_key] = res['ai_data']
                                 
-                              # UI Feedback (Alpha Arena Style)
+                                # UI Feedback (Alpha Arena Style)
                                 with results_container:
                                     with st.container():
                                         c_img, c_info = st.columns([1, 4])
                                         with c_img:
-                                            if res['img_display']: 
-                                                st.image(res['img_display'], width=60)
+                                            if res['img_display']: st.image(res['img_display'], width=60)
                                         with c_info:
                                             affected_skus = grouped.get_group(url_key)[sku_col].tolist()
                                             
-                                            # NEW: Use the Badge Component here
+                                            # NEW: Success Badge
                                             ui.status_badge(f"Auto-Synced {len(affected_skus)} Sizes", "success")
                                             
                                             st.caption(f"SKUs: {', '.join(map(str, affected_skus))}")
@@ -220,6 +223,7 @@ with c3:
                 with pd.ExcelWriter(output_gen, engine='xlsxwriter') as writer: 
                     final_df.to_excel(writer, index=False)
                 st.download_button("⬇️ Download Excel", output_gen.getvalue(), file_name=f"Result_{selected_mp}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+
     # === TAB 2: SETUP ===
     with tab_setup:
         st.header(f"⚙️ {selected_mp} Config")
