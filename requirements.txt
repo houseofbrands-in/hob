@@ -1,0 +1,12 @@
+streamlit
+pandas
+openai
+google-generativeai
+gspread
+oauth2client
+requests
+Pillow
+rembg
+openpyxl
+xlsxwriter
+watchdog
