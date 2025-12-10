@@ -108,6 +108,7 @@ def get_seo(marketplace, category):
             return row[2]
     return ""
 
+# --- NEW: DYNAMIC MARKETPLACES ---
 def get_all_marketplaces():
     """
     Fetches unique Marketplaces from the Configs sheet.
@@ -116,8 +117,13 @@ def get_all_marketplaces():
     defaults = ["Myntra", "Flipkart", "Ajio", "Amazon", "Nykaa"]
     try:
         rows = get_worksheet_data(SHEET_NAME, "Configs")
+        if not rows: return defaults
+        
         # Column 0 is Marketplace. Skip header (row 0).
-        db_mps = [r[0] for r in rows[1:] if r and len(r) > 0 and r[0].strip() != ""]
+        db_mps = []
+        for r in rows[1:]:
+            if r and len(r) > 0 and str(r[0]).strip() != "":
+                db_mps.append(str(r[0]).strip())
         
         # Combine defaults with DB values, remove duplicates, and sort
         combined = sorted(list(set(defaults + db_mps)))
