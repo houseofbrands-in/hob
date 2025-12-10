@@ -8,8 +8,7 @@ import difflib
 from openai import OpenAI
 import google.generativeai as genai
 from io import BytesIO
-import zipfile
-from PIL import Image, ImageOps
+from PIL import Image
 
 # --- DEPENDENCY CHECK ---
 try:
@@ -20,21 +19,32 @@ except ImportError:
 
 # --- INIT CLIENTS ---
 def init_clients():
+    # 1. Standard OpenAI (Direct)
     gpt_client = None
-    gemini_avail = False
-    
     try:
         if "OPENAI_API_KEY" in st.secrets:
             gpt_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     except: pass
 
+    # 2. Google Gemini (Direct)
+    gemini_avail = False
     try:
         if "GEMINI_API_KEY" in st.secrets:
             genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
             gemini_avail = True
     except: pass
     
-    return gpt_client, gemini_avail
+    # 3. OpenRouter (Multi-Model Adapter)
+    or_client = None
+    try:
+        if "OPENROUTER_API_KEY" in st.secrets:
+            or_client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=st.secrets["OPENROUTER_API_KEY"],
+            )
+    except: pass
+    
+    return gpt_client, gemini_avail, or_client
 
 # --- UTILS ---
 def parse_master_data(file):
@@ -88,10 +98,11 @@ def run_lyra_optimization(model_choice, raw_instruction, client, gemini_avail):
             return response.text
     except Exception as e: return f"Error: {str(e)}"
 
-# --- UNIFIED AI ANALYSIS ---
-def analyze_image_unified(client, base64_image, user_hints, keywords, config, marketplace, mode="Dual-AI"):
-    _, gemini_avail = init_clients() 
+# --- THE UNIVERSAL ANALYSIS ENGINE ---
+def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketplace, engine_mode, clients):
+    gpt_c, gemini_avail, or_c = clients
     
+    # Prepare Constraints
     target_columns = []
     strict_constraints = {} 
     creative_columns = []   
@@ -111,112 +122,158 @@ def analyze_image_unified(client, base64_image, user_hints, keywords, config, ma
                         best_match_len = len(m_clean); best_match_key = master_col
             if best_match_key: strict_constraints[col] = config['master_data'][best_match_key]
             else: creative_columns.append(col)
-    
-    maker_draft = {}
-    
-    # 1. GEMINI PATH
-    if "Gemini" in mode or "Dual" in mode:
+
+    # Base System Prompt
+    system_prompt = f"""
+    Role: E-commerce Expert for {marketplace}.
+    Task: Analyze image and generate JSON.
+    SECTION A: ALLOWED OPTIONS: {json.dumps(strict_constraints)}
+    SECTION B: CREATIVE: {creative_columns} - Keywords: {keywords}
+    Hints: {user_hints}
+    Output: JSON Only.
+    """
+
+    # --- ROUTING LOGIC ---
+
+    # 1. CLAUDE 3.5 SONNET (Vision King)
+    if "Claude" in engine_mode:
+        if not or_c: return None, "OpenRouter Key Missing"
         try:
-            if not gemini_avail: return None, "Gemini Missing"
+            response = or_c.chat.completions.create(
+                model="anthropic/claude-3.5-sonnet",
+                messages=[
+                    {"role": "user", "content": [
+                        {"type": "text", "text": system_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]}
+                ],
+                temperature=0.1
+            )
+            txt = response.choices[0].message.content
+            if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
+            return json.loads(txt), None
+        except Exception as e: return None, f"Claude Error: {str(e)}"
+
+    # 2. DEEPSEEK V3 (Economy) - Uses Gemini for Vision, DeepSeek for Logic
+    elif "DeepSeek" in engine_mode:
+        if not gemini_avail: return None, "Gemini Key Missing (Required for Vision)"
+        if not or_c: return None, "OpenRouter Key Missing"
+        try:
+            # Step A: Vision (Gemini)
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
+            vis_prompt = "Describe this product in extreme detail: Fabric, Color, Pattern, Neckline, Sleeves, Fit, Branding."
+            vis_res = model.generate_content([vis_prompt, image_part])
+            visual_desc = vis_res.text
             
-            maker_prompt = f"""
-            Role: E-commerce Expert for {marketplace}.
-            Task: Analyze image and generate JSON.
-            SECTION A: ALLOWED OPTIONS: {json.dumps(strict_constraints)}
-            SECTION B: CREATIVE: {creative_columns} - Keywords: {keywords}
-            Hints: {user_hints}
-            Output: JSON Only.
+            # Step B: Logic (DeepSeek)
+            ds_prompt = f"""
+            Context: {visual_desc}
+            Task: Map this description to the following JSON schema.
+            {system_prompt}
             """
-            response = model.generate_content([maker_prompt, image_part], generation_config=genai.types.GenerationConfig(temperature=0.4))
-            text_out = response.text
-            if "```json" in text_out: text_out = text_out.split("```json")[1].split("```")[0]
-            elif "```" in text_out: text_out = text_out.split("```")[1].split("```")[0]
-            maker_draft = json.loads(text_out)
-            if "Gemini" in mode: return maker_draft, None 
+            response = or_c.chat.completions.create(
+                model="deepseek/deepseek-chat",
+                messages=[{"role": "user", "content": ds_prompt}],
+                temperature=0.0
+            )
+            txt = response.choices[0].message.content
+            if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
+            return json.loads(txt), None
+        except Exception as e: return None, f"DeepSeek Error: {str(e)}"
 
-        except Exception as e:
-            if "Gemini" in mode: return None, f"Gemini Failed: {str(e)}"
-            return None, f"Maker (Gemini) Failed: {str(e)}"
-
-    # 2. GPT PATH
-    if "GPT" in mode or "Dual" in mode:
+    # 3. DUAL-AI (The Original Maker-Checker)
+    elif "Dual" in engine_mode:
+        if not gemini_avail or not gpt_c: return None, "Need both Gemini and OpenAI Keys"
         try:
-            if "GPT" in mode:
-                gpt_prompt = f"""
-                Role: E-commerce Expert.
-                Task: Analyze image and generate JSON.
-                ALLOWED OPTIONS: {json.dumps(strict_constraints)}
-                CREATIVE COLS: {creative_columns}
-                Hints: {user_hints}
-                Output: JSON Only.
-                """
-            else: # Dual
-                gpt_prompt = f"""
-                You are the LEAD DATA AUDITOR.
-                INPUTS: 1. Visual 2. Draft: {json.dumps(maker_draft)} 3. Options: {json.dumps(strict_constraints)}
-                MISSION: Enforce consistency. If Draft conflicts with Image or Options, OVERWRITE it.
-                OUTPUT: Final JSON for columns: {", ".join(target_columns)}
-                """
-
-            response = client.chat.completions.create(
+            # Maker (Gemini)
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            img_data = base64.b64decode(base64_image)
+            image_part = {"mime_type": "image/jpeg", "data": img_data}
+            res = model.generate_content([system_prompt, image_part])
+            maker_txt = res.text
+            if "```json" in maker_txt: maker_txt = maker_txt.split("```json")[1].split("```")[0]
+            elif "```" in maker_txt: maker_txt = maker_txt.split("```")[1].split("```")[0]
+            maker_draft = json.loads(maker_txt)
+            
+            # Checker (GPT-4o)
+            audit_prompt = f"""
+            You are the AUDITOR.
+            Visual Inputs provided.
+            Draft JSON: {json.dumps(maker_draft)}
+            Constraints: {json.dumps(strict_constraints)}
+            Mission: Verify Draft against Image. Fix errors.
+            Output: Final JSON.
+            """
+            response = gpt_c.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "You are a Data Engine. Temperature=0.0."},
-                    {"role": "user", "content": [{"type": "text", "text": gpt_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
+                    {"role": "system", "content": "Auditor Mode. Temp=0."},
+                    {"role": "user", "content": [{"type": "text", "text": audit_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
                 ],
                 response_format={"type": "json_object"}, temperature=0.0
             )
             return json.loads(response.choices[0].message.content), None
-        except Exception as e: return None, f"GPT Failed: {str(e)}"
-    
-    return None, "Invalid Mode"
+        except Exception as e: return None, f"Dual-AI Error: {str(e)}"
 
-# --- HELPER: MERGE AI DATA INTO ROW ---
-# This allows us to reuse the AI result for multiple rows (S, M, L)
+    # 4. GPT-4o ONLY
+    elif "GPT" in engine_mode:
+        if not gpt_c: return None, "OpenAI Key Missing"
+        try:
+            response = gpt_c.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "E-commerce Expert."},
+                    {"role": "user", "content": [{"type": "text", "text": system_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
+                ],
+                response_format={"type": "json_object"}, temperature=0.0
+            )
+            return json.loads(response.choices[0].message.content), None
+        except Exception as e: return None, f"GPT Error: {str(e)}"
+
+    # 5. GEMINI ONLY (Standard)
+    else:
+        if not gemini_avail: return None, "Gemini Key Missing"
+        try:
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            img_data = base64.b64decode(base64_image)
+            image_part = {"mime_type": "image/jpeg", "data": img_data}
+            res = model.generate_content([system_prompt, image_part])
+            txt = res.text
+            if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
+            elif "```" in txt: txt = txt.split("```")[1].split("```")[0]
+            return json.loads(txt), None
+        except Exception as e: return None, f"Gemini Error: {str(e)}"
+
+# --- HELPER: MERGE AI DATA ---
 def merge_ai_data_to_row(row_data, ai_data, config):
     new_row = {}
     mapping = config['column_mapping']
-    
     for col in config['headers']:
         rule = mapping.get(col, {'source': 'BLANK'})
         val = ""
-        
-        # SOURCE: INPUT (Grab from Excel, e.g. SKU or Size)
-        if rule['source'] == 'INPUT': 
-            val = row_data.get(col, "")
-            
-        # SOURCE: FIXED
-        elif rule['source'] == 'FIXED': 
-            val = rule['value']
-            
-        # SOURCE: AI (Use the cached AI data)
+        if rule['source'] == 'INPUT': val = row_data.get(col, "")
+        elif rule['source'] == 'FIXED': val = rule['value']
         elif rule['source'] == 'AI' and ai_data:
             if col in ai_data: val = ai_data[col]
             else: 
                 clean_col = col.lower().replace(" ", "").replace("_", "")
                 for k,v in ai_data.items():
                     if k.lower().replace(" ", "") in clean_col: val = v; break
-            
-            # Apply Master Data Constraints
             m_list = []
             for mc, opts in config['master_data'].items():
                 if mc.lower() in col.lower(): m_list = opts; break
             if m_list and val: val = enforce_master_data_fallback(val, m_list)
-        
-        # Formatting
         if isinstance(val, (list, tuple)): val = ", ".join(map(str, val))
         elif isinstance(val, dict): val = json.dumps(val)
         val = str(val).strip()
         if rule.get('max_len'): val = smart_truncate(val, int(float(rule['max_len'])))
         new_row[col] = val
-        
     return new_row
 
 # --- WORKER ---
-def process_row_workflow(row_data, img_col, sku_col, config, client, arch_mode, active_kws, selected_mp):
+def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode, active_kws, selected_mp):
     u_key = str(row_data.get(img_col, "")).strip()
     sku_label = str(row_data.get(sku_col, "Unknown SKU"))
     
@@ -230,10 +287,9 @@ def process_row_workflow(row_data, img_col, sku_col, config, client, arch_mode, 
         "error": None
     }
     
-    # 1. Download Image
+    # Download
     download_url = u_key 
-    if "dropbox.com" in download_url: 
-        download_url = download_url.replace("?dl=0", "").replace("&dl=0", "") + "&dl=1"
+    if "dropbox.com" in download_url: download_url = download_url.replace("?dl=0", "") + "&dl=1"
     
     base64_img = None
     try:
@@ -242,47 +298,30 @@ def process_row_workflow(row_data, img_col, sku_col, config, client, arch_mode, 
             result_package["img_display"] = response.content
             base64_img = base64.b64encode(response.content).decode('utf-8')
         else:
-            result_package["error"] = f"Download Failed: {response.status_code}"
+            result_package["error"] = f"Img Error: {response.status_code}"
             return result_package
     except Exception as e:
-        result_package["error"] = f"Network Error: {str(e)}"
+        result_package["error"] = f"Net Error: {str(e)}"
         return result_package
 
-    # 2. Hints
-    hints = "Product analysis."
-    try:
-        hints = ", ".join([f"{k}: {v}" for k,v in row_data.items() if k != img_col and str(v).lower() != "nan"])
-        hints = smart_truncate(hints, 300)
-    except: pass
+    hints = ", ".join([f"{k}: {v}" for k,v in row_data.items() if k != img_col and str(v).lower() != "nan"])
+    hints = smart_truncate(hints, 300)
 
-    # 3. AI Execution
-    ai_data = {}
-    err = None
-    mode_arg = "Dual-AI"
-    if "Gemini" in arch_mode: mode_arg = "Gemini"
-    elif "GPT" in arch_mode: mode_arg = "GPT"
-
-    for attempt in range(3):
+    # Call Universal Engine
+    ai_data = {}; err = None
+    for attempt in range(2):
         try:
-            ai_data, err = analyze_image_unified(client, base64_img, hints, active_kws, config, selected_mp, mode=mode_arg)
+            ai_data, err = analyze_image_multimodal(base64_img, hints, active_kws, config, selected_mp, arch_mode, clients)
             if err: 
-                if "429" in str(err): 
-                    time.sleep(60) 
-                    continue
-                else: raise Exception(err)
+                time.sleep(2); continue
             break
-        except Exception as e:
-            err = str(e)
-            time.sleep(2)
+        except Exception as e: err = str(e)
 
-    if err:
-        result_package["error"] = err
-        return result_package
+    if err: result_package["error"] = err; return result_package
+    if not ai_data: result_package["error"] = "No Data Gen"; return result_package
 
     result_package["ai_data"] = ai_data
     result_package["success"] = True
-
-    # 4. Construct Row (Using the new helper)
     result_package["final_row"] = merge_ai_data_to_row(row_data, ai_data, config)
     
     return result_package
