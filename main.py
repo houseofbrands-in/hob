@@ -121,15 +121,15 @@ else:
             m2.metric("Workers", concurrency_limit)
             m3.metric("Est. Time", f"~{int(len(valid_rows)/concurrency_limit * 12)}s")
             
-          if st.button("▶️ START ENGINE", type="primary", use_container_width=True):
+            # --- START ENGINE BLOCK ---
+            if st.button("▶️ START ENGINE", type="primary", use_container_width=True):
                 st.session_state.gen_results = []
                 st.markdown("### 📡 Processing Feed")
                 prog_bar = st.progress(0)
                 status_placeholder = st.empty() 
                 results_container = st.container()
 
-                # --- NEW LOGIC: DEDUPLICATION ---
-                # 1. Group by Image URL to save API costs
+                # 1. GROUPING LOGIC (Deduplication)
                 grouped = valid_rows.groupby(img_col)
                 unique_urls = list(grouped.groups.keys())
                 
@@ -137,17 +137,15 @@ else:
                 total_rows = len(valid_rows)
                 completed_unique = 0
                 
-                # Dictionary to store AI results: { "url": ai_data_json }
-                ai_cache = {}
+                ai_cache = {} # Stores { "http://image-url": {AI JSON Data} }
                 
-                # 2. Prepare representative rows (one per URL)
+                # 2. Prepare Tasks (Only 1 row per unique image)
                 tasks = []
                 for url, group in grouped:
-                    # We take the first row of the group as the "Driver" for the AI
                     driver_row = group.iloc[0] 
                     tasks.append(driver_row)
 
-                # 3. Process only UNIQUE URLs
+                # 3. Process Unique Images
                 with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
                     future_to_url = {
                         executor.submit(
@@ -165,19 +163,17 @@ else:
                         try:
                             res = future.result()
                             if res['success']:
-                                # Store the pure AI data (raw JSON) in cache
                                 ai_cache[url_key] = res['ai_data']
                                 
-                                # Visual Feedback (Only show once per unique image)
+                                # UI Feedback (Show once per image)
                                 with results_container:
                                     with st.container():
                                         c_img, c_info = st.columns([1, 4])
                                         with c_img:
                                             if res['img_display']: st.image(res['img_display'], width=60)
                                         with c_info:
-                                            # Find how many SKUs share this image
                                             affected_skus = grouped.get_group(url_key)[sku_col].tolist()
-                                            st.caption(f"Processed Image for {len(affected_skus)} SKUs")
+                                            st.caption(f"Completed for {len(affected_skus)} variants")
                                             st.write(f"`{', '.join(map(str, affected_skus))}`")
                                         st.divider()
                             else:
@@ -186,28 +182,27 @@ else:
                         except Exception as exc:
                             st.error(f"System Error on {url_key}: {exc}")
                 
-                # 4. RECONSTRUCTION: Apply AI results to ALL rows (S, M, L)
-                status_placeholder.info("🔄 Applying AI data to all sizes...")
+                # 4. BROADCAST RESULTS (Copy AI data to all sizes)
+                status_placeholder.info("🔄 Syncing data across sizes...")
                 final_output_rows = []
                 
                 for idx, row in valid_rows.iterrows():
                     u_key = str(row[img_col]).strip()
-                    
-                    # If we have AI data for this URL, merge it
                     if u_key in ai_cache:
-                        # Use the helper function we added to logic.py
+                        # Success: Merge AI data
                         final_row = logic.merge_ai_data_to_row(row, ai_cache[u_key], config)
                         final_output_rows.append(final_row)
                     else:
-                        # If AI failed, we still want the row, but with empty AI cols
+                        # Failure: Merge empty data (keeps original row data)
                         final_row = logic.merge_ai_data_to_row(row, {}, config)
                         final_output_rows.append(final_row)
 
                 st.session_state.gen_results = final_output_rows
-                status_placeholder.success(f"✅ Batch Complete! Processed {total_unique} images for {total_rows} SKUs.")
+                status_placeholder.success(f"✅ Batch Complete! Optimized: Processed {total_unique} images for {total_rows} SKUs.")
                 time.sleep(1)
                 st.rerun()
-              
+
+            # --- DOWNLOAD BLOCK ---
             if "gen_results" in st.session_state and len(st.session_state.gen_results) > 0:
                 st.divider()
                 st.markdown("### 📊 Final Output")
@@ -217,7 +212,6 @@ else:
                 with pd.ExcelWriter(output_gen, engine='xlsxwriter') as writer: 
                     final_df.to_excel(writer, index=False)
                 st.download_button("⬇️ Download Excel", output_gen.getvalue(), file_name=f"Result_{selected_mp}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-
     # === TAB 2: SETUP ===
     with tab_setup:
         st.header(f"⚙️ {selected_mp} Config")
