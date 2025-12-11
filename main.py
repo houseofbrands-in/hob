@@ -509,10 +509,9 @@ else:
                             time.sleep(1); 
                             st.rerun()
 
-   # === TAB 3: UTILITIES ===
+    # === TAB 3: UTILITIES ===
     with tab_tools:
         st.header("🛠️ Utilities")
-        # Added "AI Studio" to the list
         tool_choice = st.radio("Tool", ["Lyra Prompt", "Vision Guard", "Image Processor", "🎨 AI Studio (Flux)"], horizontal=True)
         st.divider()
 
@@ -569,29 +568,28 @@ else:
                 scene_prompt = st.text_area("Describe the Scene", placeholder="e.g. On a polished marble podium, sunlight streaming through leaves, luxury vibe", height=100)
             
             if studio_img and scene_prompt and st.button("✨ Generate Magic", type="primary"):
-                if not clients[2]: # Check OpenRouter
-                    st.error("⚠️ OpenRouter API Key missing in secrets.")
-                else:
-                    with st.spinner("🎨 Removing background & hallucinating new world..."):
-                        # 1. Generate Background URL
-                        bg_url, err = logic.generate_ai_background(scene_prompt)
+                # We do not check 'clients[2]' here anymore because logic.py now creates its own fresh connection.
+                with st.spinner("🎨 Removing background & hallucinating new world..."):
+                    # 1. Generate Background URL
+                    bg_url, err = logic.generate_ai_background(scene_prompt)
+                    
+                    if bg_url:
+                        # 2. Composite
+                        input_pil = Image.open(studio_img)
+                        final_img, comp_err = logic.composite_product(input_pil, bg_url)
                         
-                        if bg_url:
-                            # 2. Composite
-                            input_pil = Image.open(studio_img)
-                            final_img, comp_err = logic.composite_product(input_pil, bg_url)
+                        if final_img:
+                            st.image(final_img, caption="AI Studio Result", use_container_width=True)
                             
-                            if final_img:
-                                st.image(final_img, caption="AI Studio Result", use_container_width=True)
-                                
-                                # Download
-                                buf = BytesIO()
-                                final_img.save(buf, format="JPEG", quality=95)
-                                st.download_button("⬇️ Download Asset", buf.getvalue(), file_name="ai_studio_asset.jpg", mime="image/jpeg")
-                            else:
-                                st.error(f"Composition Error: {comp_err}")
+                            # Download
+                            buf = BytesIO()
+                            final_img.save(buf, format="JPEG", quality=95)
+                            st.download_button("⬇️ Download Asset", buf.getvalue(), file_name="ai_studio_asset.jpg", mime="image/jpeg")
                         else:
-                            st.error(f"Generation Error: {err}")
+                            st.error(f"Composition Error: {comp_err}")
+                    else:
+                        st.error(f"Generation Error: {err}")
+
     # === TAB 4: ADMIN ===
     if st.session_state.user_role == "admin":
         with tab_admin:
