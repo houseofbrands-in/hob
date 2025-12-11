@@ -172,3 +172,42 @@ def log_financials(marketplace, engine, skus, cost, savings):
         return True
     except Exception as e:
         return False
+
+# --- APPEND TO core/database.py ---
+
+def delete_user(username):
+    """
+    Removes a user row from the 'Users' worksheet.
+    """
+    # 1. Safety Checks
+    if not username: return False, "No username selected."
+    if username.lower() == "admin": return False, "Cannot delete the root Admin."
+    
+    try:
+        ws = get_worksheet_object("Users")
+        
+        # 2. Find the row index
+        # We fetch only the first column to minimize API load and search safely
+        usernames_col = ws.col_values(1) 
+        
+        try:
+            # list.index raises ValueError if not found
+            # +1 because gspread rows are 1-indexed
+            row_index = usernames_col.index(username) + 1 
+        except ValueError:
+            return False, "User not found in database."
+
+        # 3. Protect Header
+        if row_index == 1:
+            return False, "Cannot delete the Header row."
+
+        # 4. Execute Deletion
+        ws.delete_rows(row_index)
+        
+        # 5. Clear Cache so the UI updates immediately
+        st.cache_data.clear()
+        
+        return True, f"User '{username}' permanently deleted."
+        
+    except Exception as e:
+        return False, f"GSheet Error: {str(e)}"
