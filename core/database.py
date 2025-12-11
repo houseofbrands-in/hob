@@ -162,3 +162,13 @@ def log_training_data(marketplace, corrections_list):
         return False, 0
     except Exception as e:
         return False, str(e)
+# --- PHASE 2: FINANCIAL LOGGING ---
+def log_financials(marketplace, engine, skus, cost, savings):
+    try:
+        ws = get_worksheet_object("Usage_Ledger")
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        # Format: Time, MP, Engine, SKU_Count, Real_Cost, Savings
+        ws.append_row([timestamp, marketplace, engine, skus, round(cost, 4), round(savings, 4)])
+        return True
+    except Exception as e:
+        return False
