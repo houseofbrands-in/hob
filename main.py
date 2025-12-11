@@ -593,12 +593,73 @@ else:
     # === TAB 4: ADMIN ===
     if st.session_state.user_role == "admin":
         with tab_admin:
-            st.header("👥 Admin")
-            st.dataframe(pd.DataFrame(db.get_all_users()), use_container_width=True)
-            with st.expander("Add User"):
-                with st.form("add_user"):
-                    new_u = st.text_input("Username"); new_p = st.text_input("Password"); new_r = st.selectbox("Role", ["user", "admin"])
-                    if st.form_submit_button("Create"):
-                        ok, msg = db.create_user(new_u, new_p, new_r)
-                        if ok: st.success(msg); time.sleep(1); st.rerun()
-                        else: st.error(msg)
+            st.header("👥 Admin Console")
+            
+            # Fetch latest data
+            users_list = db.get_all_users()
+            df_users = pd.DataFrame(users_list)
+            
+            # Layout: Left (Table) - Right (Controls)
+            c_adm_table, c_adm_ctrl = st.columns([2, 1])
+            
+            with c_adm_table:
+                st.subheader("Active Users")
+                # Mask password column for security
+                if "Password" in df_users.columns:
+                    df_users["Password"] = "********"
+                elif "password" in df_users.columns:
+                    df_users["password"] = "********"
+                    
+                st.dataframe(df_users, use_container_width=True, hide_index=True)
+            
+            with c_adm_ctrl:
+                st.subheader("⚡ Actions")
+                
+                # --- ACTION 1: ADD USER ---
+                with st.expander("➕ Create User", expanded=False):
+                    with st.form("add_user"):
+                        new_u = st.text_input("Username")
+                        new_p = st.text_input("Password", type="password")
+                        new_r = st.selectbox("Role", ["user", "admin"])
+                        if st.form_submit_button("Create Profile", type="primary"):
+                            if len(new_p) < 4:
+                                st.error("Password too short.")
+                            else:
+                                ok, msg = db.create_user(new_u, new_p, new_r)
+                                if ok: 
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else: 
+                                    st.error(msg)
+                
+                # --- ACTION 2: REMOVE USER ---
+                with st.expander("🗑️ Remove User", expanded=True):
+                    # Filter: Exclude 'admin' and the currently logged-in user
+                    # Note: We check against both 'Username' and 'username' keys depending on GSheet header case
+                    current_user = st.session_state.username
+                    
+                    removable_users = []
+                    for u in users_list:
+                        # Handle potential case sensitivity in headers
+                        u_name = u.get("Username", u.get("username", ""))
+                        if u_name and u_name.lower() != "admin" and u_name != current_user:
+                            removable_users.append(u_name)
+                    
+                    if not removable_users:
+                        st.info("No removable users available.")
+                    else:
+                        target_user = st.selectbox("Select User to Remove", removable_users)
+                        
+                        # Double confirmation
+                        confirm_del = st.checkbox(f"I confirm I want to delete '{target_user}'", key="del_confirm")
+                        
+                        if st.button("❌ Permanently Delete", disabled=not confirm_del, type="primary"):
+                            with st.spinner("Deleting from Google Sheet..."):
+                                ok, msg = db.delete_user(target_user)
+                                if ok:
+                                    st.toast(msg, icon="🗑️")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
