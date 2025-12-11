@@ -12,14 +12,13 @@ from io import BytesIO
 from PIL import Image
 
 # --- DEPENDENCY CHECK ---
+REMBG_ERROR = None
 try:
     from rembg import remove as remove_bg_ai
     REMBG_AVAILABLE = True
-except ImportError:
+except Exception as e:
     REMBG_AVAILABLE = False
-
-print("DEBUG: HOB OS Logic Module Loaded (v12.0.5 - Transparency Fix)")
-
+    REMBG_ERROR = str(e) # Save the actual error message
 # --- INIT CLIENTS ---
 def init_clients():
     gpt_client = None
@@ -297,35 +296,32 @@ def generate_ai_background(prompt, _unused_client=None):
 
 def composite_product(product_img, bg_url):
     try:
-        # A. FORCE RGBA MODE (Essential for transparency)
+        # A. FORCE RGBA MODE
         product_img = product_img.convert("RGBA")
 
         # B. CHECK DEPENDENCY
         if not REMBG_AVAILABLE:
-            return None, "Library Error: 'rembg' is missing or failed to import. Check server logs."
+            # RETURN THE ACTUAL IMPORT ERROR
+            return None, f"Server Error: rembg failed to load. Details: {REMBG_ERROR}"
 
-        # C. EXECUTE REMOVAL (No silent skipping)
+        # C. EXECUTE REMOVAL
         try:
-            # We strip the background here. 
-            # If this fails, we want to catch the specific error and STOP.
             product_img = remove_bg_ai(product_img)
             
-            # Verification: Check if the image actually has transparency now.
-            # If the alpha channel is purely white (255), nothing was removed.
+            # Verify transparency
             extrema = product_img.getextrema()
             if extrema and len(extrema) > 3:
-                alpha_stats = extrema[3] # (min, max)
+                alpha_stats = extrema[3]
                 if alpha_stats[0] == 255 and alpha_stats[1] == 255:
-                    return None, "AI Removal Failed: The tool could not detect the background."
+                    return None, "AI Removal Failed: Image remained solid (no background removed)."
         except Exception as bg_err:
             return None, f"Background Removal Crashed: {str(bg_err)}"
 
-        # D. Download Background (Browser Emulation)
+        # D. Download Background
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
         session = requests.Session()
         bg_response = session.get(bg_url, headers=headers, timeout=25, stream=True)
         
-        # Check if valid image
         if 'image' not in bg_response.headers.get('Content-Type', '').lower():
             bg_img = Image.new('RGBA', (1024, 1024), (240, 240, 240, 255))
         else:
@@ -344,7 +340,6 @@ def composite_product(product_img, bg_url):
             target_w = int(p_w * ratio)
             product_resized = product_img.resize((target_w, target_h), Image.LANCZOS)
             
-            # F. Paste (Using product itself as the mask)
             bg_w, bg_h = bg_img.size
             offset_x = (bg_w - target_w) // 2
             offset_y = (bg_h - target_h) // 2 + 50
