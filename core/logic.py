@@ -393,3 +393,93 @@ def estimate_cost(engine_mode, num_skus):
     savings = benchmark_cost - total_cost
     
     return total_cost, benchmark_cost, savings
+
+# --- PHASE 3: THE AI STUDIO ---
+def generate_ai_background(prompt, client):
+    """
+    Uses OpenRouter (Flux-1 Schnell) to generate a background image.
+    """
+    if not client: return None, "OpenRouter Client not initialized"
+    
+    try:
+        # 1. Enhanced Prompt for Flux
+        full_prompt = f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
+        
+        # 2. Call OpenRouter
+        response = client.chat.completions.create(
+            model="black-forest-labs/flux-1-schnell",
+            messages=[{"role": "user", "content": full_prompt}],
+        )
+        
+        # 3. Flux usually returns a URL in the content or a specific image object
+        # Note: OpenRouter's Image API format varies. Assuming standard OpenAI Image format or Text response containing URL.
+        # For Chat Completions with Image models, the URL is often in the content.
+        
+        # *Standard OpenAI Image API pattern (if supported by adapter)*:
+        # resp = client.images.generate(model=..., prompt=...) 
+        # But OpenRouter often uses ChatCompletions for everything.
+        
+        # Let's try the standard Generation pattern first, fallback to Chat.
+        # Since we initialized 'client' as OpenAI object, let's try strict generation if model supports it.
+        # However, Flux on OpenRouter is often text-to-image via specific endpoint. 
+        # Let's stick to the most robust method: The Chat Completion return usually contains the URL in Markdown.
+        
+        content = response.choices[0].message.content
+        image_url = ""
+        if "(" in content and ")" in content:
+            # Extract URL from markdown link ![image](url)
+            start = content.find("(") + 1
+            end = content.find(")")
+            image_url = content[start:end]
+        else:
+            # Fallback: Sometimes it's just the raw URL
+            image_url = content.strip()
+
+        if not image_url.startswith("http"):
+            return None, f"Failed to parse URL: {content[:50]}..."
+
+        return image_url, None
+
+    except Exception as e:
+        return None, str(e)
+
+def composite_product(product_img, bg_url):
+    """
+    1. Removes BG from product.
+    2. Downloads AI Background.
+    3. Pastes Product onto Background.
+    """
+    try:
+        # A. Prepare Product (Remove BG)
+        if REMBG_AVAILABLE:
+            product_img = remove_bg_ai(product_img)
+        
+        # B. Get Background
+        bg_response = requests.get(bg_url)
+        bg_img = Image.open(BytesIO(bg_response.content)).convert("RGBA")
+        
+        # C. Resize Background to standard 1024x1024 (Flux default)
+        bg_img = bg_img.resize((1024, 1024))
+        
+        # D. Resize Product to fit nicely (e.g., 70% of height)
+        # Calculate aspect ratio
+        p_w, p_h = product_img.size
+        target_h = int(1024 * 0.7)
+        ratio = target_h / p_h
+        target_w = int(p_w * ratio)
+        
+        product_resized = product_img.resize((target_w, target_h), Image.LANCZOS)
+        
+        # E. Center Position
+        bg_w, bg_h = bg_img.size
+        offset_x = (bg_w - target_w) // 2
+        offset_y = (bg_h - target_h) // 2 + 50 # Slightly lower than center looks better
+        
+        # F. Paste
+        final_comp = bg_img.copy()
+        final_comp.paste(product_resized, (offset_x, offset_y), product_resized)
+        
+        return final_comp.convert("RGB"), None
+        
+    except Exception as e:
+        return None, str(e)
