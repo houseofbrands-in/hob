@@ -245,17 +245,86 @@ else:
                     time.sleep(1)
                     st.rerun()
 
-                # --- DOWNLOAD BLOCK ---
+               # --- PHASE 1: HUMAN-IN-THE-LOOP EDITOR ---
                 if "gen_results" in st.session_state and len(st.session_state.gen_results) > 0:
                     st.divider()
-                    st.markdown("### 📊 Final Output")
-                    final_df = pd.DataFrame(st.session_state.gen_results)
-                    st.dataframe(final_df, use_container_width=True)
-                    output_gen = BytesIO()
-                    with pd.ExcelWriter(output_gen, engine='xlsxwriter') as writer: 
-                        final_df.to_excel(writer, index=False)
-                    st.download_button("⬇️ Download Excel", output_gen.getvalue(), file_name=f"Result_{selected_mp}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+                    st.markdown("### 📝 Human-in-the-Loop Editor")
+                    st.caption("Review the AI's work. Edit cells directly. Changes are auto-saved to the Download button.")
 
+                    # 1. Prepare Data
+                    df_ai_raw = pd.DataFrame(st.session_state.gen_results)
+                    
+                    # 2. Render Editor (Dynamic)
+                    # We lock the Image URL and SKU to prevent breaking the keys
+                    column_config = {
+                        img_col: st.column_config.TextColumn("Image Reference", disabled=True),
+                        sku_col: st.column_config.TextColumn("SKU", disabled=True)
+                    }
+                    
+                    edited_df = st.data_editor(
+                        df_ai_raw, 
+                        key="editor_grid",
+                        use_container_width=True,
+                        num_rows="fixed", # Prevent accidental deletion of rows
+                        column_config=column_config,
+                        height=400
+                    )
+
+                    # 3. Detect Changes (The "Learning" Logic)
+                    # Compare Original AI Draft vs Edited Version
+                    try:
+                        changes_detected = []
+                        if not df_ai_raw.equals(edited_df):
+                            # Iterate to find diffs (Simplified for performance)
+                            # We only scan if shapes match
+                            if df_ai_raw.shape == edited_df.shape:
+                                diff_mask = (df_ai_raw != edited_df)
+                                diff_locations = diff_mask.stack()[diff_mask.stack()].index.tolist()
+                                
+                                for idx, col in diff_locations:
+                                    row_url = df_ai_raw.loc[idx, img_col]
+                                    old_val = df_ai_raw.loc[idx, col]
+                                    new_val = edited_df.loc[idx, col]
+                                    changes_detected.append({
+                                        "img_url": row_url,
+                                        "col": col,
+                                        "ai_value": old_val,
+                                        "human_value": new_val
+                                    })
+
+                        # 4. Action Bar
+                        c_act1, c_act2 = st.columns([1, 2])
+                        
+                        with c_act1:
+                            # THE DOWNLOAD BUTTON (Now uses edited_df)
+                            output_gen = BytesIO()
+                            with pd.ExcelWriter(output_gen, engine='xlsxwriter') as writer: 
+                                edited_df.to_excel(writer, index=False)
+                            
+                            st.download_button(
+                                "⬇️ Download Final Excel", 
+                                output_gen.getvalue(), 
+                                file_name=f"Result_{selected_mp}_Verified.xlsx", 
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                                type="primary",
+                                use_container_width=True
+                            )
+
+                        with c_act2:
+                            # THE LEARNING BUTTON
+                            if changes_detected:
+                                btn_label = f"🧠 Train System ({len(changes_detected)} Corrections)"
+                                if st.button(btn_label, use_container_width=True, type="secondary"):
+                                    ok, count = db.log_training_data(selected_mp, changes_detected)
+                                    if ok:
+                                        st.toast(f"✅ System learned from {count} corrections!", icon="🧠")
+                                    else:
+                                        st.error(f"Save failed: {count}")
+                            else:
+                                st.button("🧠 System Training (No Changes)", disabled=True, use_container_width=True)
+                                
+                    except Exception as e:
+                        st.error(f"Editor Sync Error: {e}")
     # === TAB 2: SETUP (UNBLOCKED) ===
     with tab_setup:
         # Guard: Check if MP is selected
