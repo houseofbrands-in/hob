@@ -363,6 +363,7 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     result_package["final_row"] = merge_ai_data_to_row(row_data, ai_data, config)
     
     return result_package
+
 # --- PHASE 2: COST ESTIMATION ---
 def estimate_cost(engine_mode, num_skus):
     """
@@ -468,8 +469,9 @@ def generate_ai_background(prompt, _unused_client=None):
             continue
             
     return None, f"All models failed. Last Error: {last_error}"
-    
-    def composite_product(product_img, bg_url):
+
+# --- COMPOSITING ---
+def composite_product(product_img, bg_url):
     """
     1. Removes BG from product.
     2. Downloads AI Background.
