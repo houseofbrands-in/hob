@@ -19,6 +19,7 @@ try:
 except Exception as e:
     REMBG_AVAILABLE = False
     REMBG_ERROR = str(e) # Save the actual error message
+
 # --- INIT CLIENTS ---
 def init_clients():
     gpt_client = None
@@ -79,6 +80,22 @@ def enforce_master_data_fallback(value, options):
         for opt in options:
             if str(opt).lower() == match_lower: return opt
     return value
+
+def retry_with_backoff(func, retries=3, delay=2, backoff=2, *args, **kwargs):
+    """
+    Tries to execute a function. If it fails, waits and retries.
+    Delay doubles after each failure (Exponential Backoff).
+    """
+    for i in range(retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # If it's the last attempt, raise the error
+            if i == retries - 1:
+                raise e
+            # Otherwise, wait and increase delay
+            time.sleep(delay)
+            delay *= backoff  # Increase wait time (2s -> 4s -> 8s)
 
 def run_lyra_optimization(model_choice, raw_instruction, client, gemini_avail):
     lyra_system_prompt = "You are Lyra, a master-level AI prompt optimization specialist..."
@@ -221,6 +238,7 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     sku_label = str(row_data.get(sku_col, "Unknown SKU"))
     result_package = {"success": False, "sku": sku_label, "u_key": u_key, "img_display": None, "ai_data": {}, "final_row": {}, "error": None}
     
+    # 1. Download Image
     download_url = u_key 
     if "dropbox.com" in download_url: download_url = download_url.replace("?dl=0", "") + "&dl=1"
     
@@ -240,20 +258,28 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     hints = ", ".join([f"{k}: {v}" for k,v in row_data.items() if k != img_col and str(v).lower() != "nan"])
     hints = smart_truncate(hints, 300)
 
-    ai_data = {}; err = None
-    for attempt in range(2):
-        try:
-            ai_data, err = analyze_image_multimodal(base64_img, hints, active_kws, config, selected_mp, arch_mode, clients)
-            if err: time.sleep(2); continue
-            break
-        except Exception as e: err = str(e)
+    # 2. AI Analysis WITH RETRY LOGIC
+    # We define a task function to pass to the retrier
+    def run_ai_task():
+        data, err_msg = analyze_image_multimodal(base64_img, hints, active_kws, config, selected_mp, arch_mode, clients)
+        if err_msg:
+            raise Exception(err_msg) # Force exception so retry logic catches it
+        if not data:
+            raise Exception("Empty Data Returned")
+        return data
 
-    if err: result_package["error"] = err; return result_package
-    if not ai_data: result_package["error"] = "No Data Gen"; return result_package
+    try:
+        # Try 3 times, starting with 2s delay, doubling each time (2s, 4s, 8s)
+        ai_data = retry_with_backoff(run_ai_task, retries=3, delay=2, backoff=2)
+        
+        result_package["ai_data"] = ai_data
+        result_package["success"] = True
+        result_package["final_row"] = merge_ai_data_to_row(row_data, ai_data, config)
+        
+    except Exception as final_err:
+        # If all retries fail, capture the error
+        result_package["error"] = str(final_err)
 
-    result_package["ai_data"] = ai_data
-    result_package["success"] = True
-    result_package["final_row"] = merge_ai_data_to_row(row_data, ai_data, config)
     return result_package
 
 def estimate_cost(engine_mode, num_skus):
