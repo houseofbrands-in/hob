@@ -297,23 +297,36 @@ def generate_ai_background(prompt, _unused_client=None):
 
 def composite_product(product_img, bg_url):
     try:
-        # A. FORCE RGBA MODE (Fixes 'bad transparency mask' error)
+        # A. FORCE RGBA MODE (Essential for transparency)
         product_img = product_img.convert("RGBA")
 
-        # B. Remove Background
-        if REMBG_AVAILABLE:
-            try:
-                product_img = remove_bg_ai(product_img)
-            except: pass 
+        # B. CHECK DEPENDENCY
+        if not REMBG_AVAILABLE:
+            return None, "Library Error: 'rembg' is missing or failed to import. Check server logs."
 
-        # C. Download Background (Browser Emulation)
+        # C. EXECUTE REMOVAL (No silent skipping)
+        try:
+            # We strip the background here. 
+            # If this fails, we want to catch the specific error and STOP.
+            product_img = remove_bg_ai(product_img)
+            
+            # Verification: Check if the image actually has transparency now.
+            # If the alpha channel is purely white (255), nothing was removed.
+            extrema = product_img.getextrema()
+            if extrema and len(extrema) > 3:
+                alpha_stats = extrema[3] # (min, max)
+                if alpha_stats[0] == 255 and alpha_stats[1] == 255:
+                    return None, "AI Removal Failed: The tool could not detect the background."
+        except Exception as bg_err:
+            return None, f"Background Removal Crashed: {str(bg_err)}"
+
+        # D. Download Background (Browser Emulation)
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
         session = requests.Session()
         bg_response = session.get(bg_url, headers=headers, timeout=25, stream=True)
         
         # Check if valid image
         if 'image' not in bg_response.headers.get('Content-Type', '').lower():
-            # Fallback to solid color if download fails/returns HTML
             bg_img = Image.new('RGBA', (1024, 1024), (240, 240, 240, 255))
         else:
             try:
@@ -321,24 +334,27 @@ def composite_product(product_img, bg_url):
             except:
                 bg_img = Image.new('RGBA', (1024, 1024), (200, 200, 200, 255))
 
-        # D. Resize
+        # E. Resize & Composite
         bg_img = bg_img.resize((1024, 1024))
         p_w, p_h = product_img.size
         target_h = int(1024 * 0.7)
-        ratio = target_h / p_h
-        target_w = int(p_w * ratio)
-        product_resized = product_img.resize((target_w, target_h), Image.LANCZOS)
         
-        # E. Paste (Using product as mask)
-        bg_w, bg_h = bg_img.size
-        offset_x = (bg_w - target_w) // 2
-        offset_y = (bg_h - target_h) // 2 + 50
-        
-        final_comp = bg_img.copy()
-        # Because we forced RGBA at step A, this is now safe
-        final_comp.paste(product_resized, (offset_x, offset_y), product_resized)
-        
-        return final_comp.convert("RGB"), None
+        if p_h > 0:
+            ratio = target_h / p_h
+            target_w = int(p_w * ratio)
+            product_resized = product_img.resize((target_w, target_h), Image.LANCZOS)
+            
+            # F. Paste (Using product itself as the mask)
+            bg_w, bg_h = bg_img.size
+            offset_x = (bg_w - target_w) // 2
+            offset_y = (bg_h - target_h) // 2 + 50
+            
+            final_comp = bg_img.copy()
+            final_comp.paste(product_resized, (offset_x, offset_y), product_resized)
+            
+            return final_comp.convert("RGB"), None
+        else:
+            return None, "Image sizing error."
         
     except Exception as e:
-        return None, f"Composite Error: {str(e)}"
+        return None, f"Composite Logic Error: {str(e)}"
