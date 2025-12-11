@@ -363,3 +363,33 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     result_package["final_row"] = merge_ai_data_to_row(row_data, ai_data, config)
     
     return result_package
+# --- PHASE 2: COST ESTIMATION ---
+def estimate_cost(engine_mode, num_skus):
+    """
+    Returns (estimated_cost, benchmark_cost_gpt4, savings)
+    Prices are approximate per-SKU averages (Image + ~500 tokens).
+    """
+    # Base rates per SKU (USD)
+    rates = {
+        "GPT": 0.0200,          # GPT-4o (Expensive)
+        "Claude": 0.0100,       # Sonnet 3.5
+        "DeepSeek": 0.0020,     # DeepSeek V3 (Very Cheap)
+        "Gemini": 0.0005,       # Flash (Extremely Cheap)
+        "Eagle-Eye": 0.0105,    # Gemini + Claude
+        "Dual-AI": 0.0205,      # Gemini + GPT-4o
+    }
+    
+    # Determine active rate
+    active_rate = 0.02 # Default to high
+    if "DeepSeek" in engine_mode: active_rate = rates["DeepSeek"]
+    elif "Precision" in engine_mode: active_rate = rates["Claude"]
+    elif "Eagle-Eye" in engine_mode: active_rate = rates["Eagle-Eye"]
+    elif "Dual-AI" in engine_mode: active_rate = rates["Dual-AI"]
+    elif "Standard" in engine_mode: active_rate = rates["Gemini"]
+    elif "Logic Pro" in engine_mode: active_rate = rates["GPT"]
+    
+    total_cost = active_rate * num_skus
+    benchmark_cost = rates["GPT"] * num_skus
+    savings = benchmark_cost - total_cost
+    
+    return total_cost, benchmark_cost, savings
