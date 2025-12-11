@@ -18,7 +18,7 @@ try:
 except ImportError:
     REMBG_AVAILABLE = False
 
-print("DEBUG: HOB OS Logic Module Loaded (v12.0.4 - Robust Image Handling)")
+print("DEBUG: HOB OS Logic Module Loaded (v12.0.5 - Transparency Fix)")
 
 # --- INIT CLIENTS ---
 def init_clients():
@@ -128,7 +128,6 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
     Output: JSON Only.
     """
 
-    # --- SIMPLIFIED ROUTING ---
     if "Precision" in engine_mode and or_c:
         try:
             response = or_c.chat.completions.create(
@@ -182,7 +181,7 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             return json.loads(response.choices[0].message.content), None
         except Exception as e: return None, str(e)
 
-    else: # Fallback Gemini
+    else: 
         if not gemini_avail: return None, "Gemini Key Missing"
         try:
             model = genai.GenerativeModel('gemini-2.5-flash')
@@ -271,99 +270,72 @@ def estimate_cost(engine_mode, num_skus):
     bench = rates["GPT"] * num_skus
     return total, bench, bench - total
 
-# --- PHASE 3: AI STUDIO (ROBUST VERSION) ---
+# --- PHASE 3: AI STUDIO (FINAL ROBUST) ---
 def generate_ai_background(prompt, _unused_client=None):
-    """
-    Tries OpenRouter (Flux) -> Fallback to Pollinations.ai
-    """
-    # 1. STRATEGY: OPENROUTER FLUX
+    # 1. OpenRouter Flux
     if "OPENROUTER_API_KEY" in st.secrets:
         try:
             api_key = st.secrets["OPENROUTER_API_KEY"]
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://hob-os.com", "X-Title": "HOB"}
-            
-            # Trying the free endpoint explicitly
+            # Specific free model ID
             model_id = "black-forest-labs/flux-1-schnell:free" 
-            payload = {
-                "model": model_id,
-                "messages": [{"role": "user", "content": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic"}]
-            }
+            payload = {"model": model_id, "messages": [{"role": "user", "content": f"product photography background, {prompt}"}]}
             res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25)
-            
             if res.status_code == 200:
                 content = res.json()['choices'][0]['message']['content']
-                if "(" in content and ")" in content:
-                    return content[content.find("(")+1:content.find(")")], None
-                if content.strip().startswith("http"):
-                    return content.strip(), None
-            else:
-                print(f"DEBUG: OpenRouter Flux Failed ({res.status_code}). Switching to Fallback.")
+                if "(" in content and ")" in content: return content[content.find("(")+1:content.find(")")], None
+                if content.strip().startswith("http"): return content.strip(), None
         except: pass
 
-    # 2. STRATEGY: POLLINATIONS (Guaranteed)
+    # 2. Pollinations Fallback
     try:
-        # Use simple prompt encoding
         safe_prompt = urllib.parse.quote(f"product photography background {prompt}")
         poll_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
-        
-        # Verify it's reachable
         return poll_url, None
-            
     except Exception as e:
-        return None, f"All strategies failed. {e}"
+        return None, f"Strategy Error: {e}"
 
 def composite_product(product_img, bg_url):
-    """
-    Robust Composition with File Identification
-    """
     try:
-        # A. Remove Background
+        # A. FORCE RGBA MODE (Fixes 'bad transparency mask' error)
+        product_img = product_img.convert("RGBA")
+
+        # B. Remove Background
         if REMBG_AVAILABLE:
             try:
                 product_img = remove_bg_ai(product_img)
             except: pass 
 
-        # B. Download Background (Stealth Mode)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        
-        # We need a session to handle redirects correctly for Pollinations
+        # C. Download Background (Browser Emulation)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
         session = requests.Session()
         bg_response = session.get(bg_url, headers=headers, timeout=25, stream=True)
         
-        # --- CRITICAL FIX: Check if we actually got an image ---
-        content_type = bg_response.headers.get('Content-Type', '').lower()
-        
-        # If not an image, create a fallback color background
-        if 'image' not in content_type:
-            print(f"DEBUG: Failed to download valid image. Got {content_type}. Using fallback color.")
-            bg_img = Image.new('RGB', (1024, 1024), (240, 240, 240)) # Light Grey Fallback
+        # Check if valid image
+        if 'image' not in bg_response.headers.get('Content-Type', '').lower():
+            # Fallback to solid color if download fails/returns HTML
+            bg_img = Image.new('RGBA', (1024, 1024), (240, 240, 240, 255))
         else:
             try:
-                # Try to open the image
                 bg_img = Image.open(BytesIO(bg_response.content)).convert("RGBA")
-            except Exception as e:
-                print(f"DEBUG: Image Open Failed: {e}. Using fallback.")
-                bg_img = Image.new('RGB', (1024, 1024), (200, 200, 200)) # Grey Fallback
+            except:
+                bg_img = Image.new('RGBA', (1024, 1024), (200, 200, 200, 255))
 
-        # C. Resize Background
+        # D. Resize
         bg_img = bg_img.resize((1024, 1024))
-        
-        # D. Resize Product
         p_w, p_h = product_img.size
         target_h = int(1024 * 0.7)
         ratio = target_h / p_h
         target_w = int(p_w * ratio)
         product_resized = product_img.resize((target_w, target_h), Image.LANCZOS)
         
-        # E. Center
+        # E. Paste (Using product as mask)
         bg_w, bg_h = bg_img.size
         offset_x = (bg_w - target_w) // 2
         offset_y = (bg_h - target_h) // 2 + 50
         
-        # F. Paste
         final_comp = bg_img.copy()
+        # Because we forced RGBA at step A, this is now safe
         final_comp.paste(product_resized, (offset_x, offset_y), product_resized)
         
         return final_comp.convert("RGB"), None
