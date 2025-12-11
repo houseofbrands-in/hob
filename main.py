@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import time
-import zipfile  # <--- WAS MISSING
-from PIL import Image, ImageOps # <--- WAS MISSING
+import zipfile
+from PIL import Image, ImageOps
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -245,7 +245,7 @@ else:
                     time.sleep(1)
                     st.rerun()
 
-               # --- PHASE 1: HUMAN-IN-THE-LOOP EDITOR ---
+                # --- PHASE 1: HUMAN-IN-THE-LOOP EDITOR ---
                 if "gen_results" in st.session_state and len(st.session_state.gen_results) > 0:
                     st.divider()
                     st.markdown("### 📝 Human-in-the-Loop Editor")
@@ -261,7 +261,7 @@ else:
                         sku_col: st.column_config.TextColumn("SKU", disabled=True)
                     }
                     
-                    st.data_editor(
+                    edited_df = st.data_editor(
                         df_ai_raw, 
                         key="editor_grid",
                         use_container_width=True,
@@ -325,6 +325,7 @@ else:
                                 
                     except Exception as e:
                         st.error(f"Editor Sync Error: {e}")
+
     # === TAB 2: SETUP (UNBLOCKED) ===
     with tab_setup:
         # Guard: Check if MP is selected
@@ -333,8 +334,6 @@ else:
                 st.info("👈 Please type the new Marketplace Name in the sidebar and press ENTER.")
             else:
                 st.warning("👈 Please select a Marketplace in the sidebar.")
-            # Note: We can use st.stop() here because it's the end of the render chain for this user flow,
-            # but safer to just wrap content in 'else'.
         
         else:
             st.header(f"⚙️ {selected_mp} Config")
@@ -403,9 +402,8 @@ else:
                         })
                 else: ui_data = default_mapping
 
-                edited_df = # --- DEFINE DROPDOWN OPTIONS ---
+                # --- DEFINE DROPDOWN OPTIONS ---
                 source_options = ["AI Generation", "Input Excel", "Fixed Value", "Leave Blank"]
-                # Added "SEO (Optimized)" back to the list
                 style_options = ["Standard (Auto)", "Creative (Marketing)", "Technical (Specs)", "SEO (Optimized)"] 
 
                 # --- RENDER EDITOR WITH ALL CONTROLS ---
@@ -432,7 +430,7 @@ else:
                         ),
                         "Max Chars": st.column_config.NumberColumn(
                             "Max Chars",
-                            help="Limit output length (0 or Empty = No Limit)",
+                            help="Limit output length",
                             min_value=0,
                             max_value=2000,
                             step=1,
@@ -441,7 +439,7 @@ else:
                         "AI Style": st.column_config.SelectboxColumn(
                             "AI Style",
                             width="medium",
-                            options=style_options, # Now includes SEO
+                            options=style_options,
                             required=True
                         ),
                         "Custom Prompt": st.column_config.TextColumn(
