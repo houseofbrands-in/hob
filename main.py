@@ -403,7 +403,53 @@ else:
                         })
                 else: ui_data = default_mapping
 
-                edited_df = st.data_editor(pd.DataFrame(ui_data), hide_index=True, use_container_width=True, height=400)
+                edited_df = # --- DEFINE DROPDOWN OPTIONS ---
+                source_options = ["AI Generation", "Input Excel", "Fixed Value", "Leave Blank"]
+                # Added "SEO (Optimized)" back to the list
+                style_options = ["Standard (Auto)", "Creative (Marketing)", "Technical (Specs)", "SEO (Optimized)"] 
+
+                # --- RENDER EDITOR WITH ALL CONTROLS ---
+                edited_df = st.data_editor(
+                    pd.DataFrame(ui_data),
+                    hide_index=True,
+                    use_container_width=True,
+                    height=400,
+                    column_config={
+                        "Column Name": st.column_config.TextColumn(
+                            "Column Name", 
+                            disabled=True, 
+                            width="medium"
+                        ),
+                        "Source": st.column_config.SelectboxColumn(
+                            "Source",
+                            width="medium",
+                            options=source_options,
+                            required=True
+                        ),
+                        "Fixed Value": st.column_config.TextColumn(
+                            "Fixed Value",
+                            width="medium"
+                        ),
+                        "Max Chars": st.column_config.NumberColumn(
+                            "Max Chars",
+                            help="Limit output length (0 or Empty = No Limit)",
+                            min_value=0,
+                            max_value=2000,
+                            step=1,
+                            width="small"
+                        ),
+                        "AI Style": st.column_config.SelectboxColumn(
+                            "AI Style",
+                            width="medium",
+                            options=style_options, # Now includes SEO
+                            required=True
+                        ),
+                        "Custom Prompt": st.column_config.TextColumn(
+                            "Custom Prompt",
+                            width="large"
+                        )
+                    }
+                )
                 
                 if st.button("💾 Save Config", type="primary"):
                     if not cat_name:
