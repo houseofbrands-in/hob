@@ -394,50 +394,58 @@ def estimate_cost(engine_mode, num_skus):
     
     return total_cost, benchmark_cost, savings
 
-# --- PHASE 3: THE AI STUDIO (SMART FIX) ---
-def generate_ai_background(prompt, client):
+# --- PHASE 3: THE AI STUDIO (CONNECTION FIX) ---
+def generate_ai_background(prompt, _unused_client=None):
     """
-    1. Verifies we are hitting OpenRouter (not OpenAI).
-    2. Tries 'Free' versions of models first.
-    3. Tries Standard versions as fallback.
+    Generates a background image using OpenRouter.
+    Creates a FRESH connection to ensure we hit OpenRouter, not OpenAI.
     """
-    if not client: return None, "OpenRouter Client not initialized"
+    # 1. Force a clean connection to OpenRouter
+    try:
+        if "OPENROUTER_API_KEY" not in st.secrets:
+            return None, "Missing OPENROUTER_API_KEY in secrets."
+            
+        # Create a dedicated client just for this function
+        or_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=st.secrets["OPENROUTER_API_KEY"],
+        )
+    except Exception as e:
+        return None, f"Client Init Error: {str(e)}"
 
-    # DIAGNOSTIC: Check where we are pointing
-    # If this prints 'api.openai.com', we know the config is wrong.
-    print(f"DEBUG: AI Studio connecting to -> {client.base_url}")
-
-    # PRIORITY LIST (Free first, then Paid)
+    # 2. Priority Model List (Free & Paid mix)
+    # We try them in order. If one fails, we try the next.
     candidate_models = [
-        "black-forest-labs/flux-1-schnell:free", # Try Free Tier
-        "black-forest-labs/flux-1-schnell",      # Try Paid Tier
-        "black-forest-labs/flux-1-dev",          # Try Dev
-        "google/gemini-2.0-flash-exp:free",      # Fallback to Gemini (High Success Rate)
-        "stabilityai/stable-diffusion-xl-base-1.0"
+        "black-forest-labs/flux-1-schnell",      # Top Choice
+        "black-forest-labs/flux-1-dev",          # High Quality
+        "stabilityai/stable-diffusion-xl-base-1.0", # Reliable Fallback
+        "google/gemini-2.0-flash-exp:free"       # Free Tier Fallback
     ]
     
     last_error = None
     
     for model_id in candidate_models:
         try:
-            # Enhanced Prompt
+            # 3. Construct Prompt
             full_prompt = f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
             
-            # Call API
-            response = client.chat.completions.create(
+            # 4. Make the API Call
+            # We add headers to identify the app (good practice for OpenRouter)
+            response = or_client.chat.completions.create(
                 model=model_id,
                 messages=[{"role": "user", "content": full_prompt}],
                 extra_headers={
-                    "HTTP-Referer": "https://hob-os-app.com", # Required by OpenRouter free tier
+                    "HTTP-Referer": "https://hob-os-app.com",
                     "X-Title": "HOB OS"
                 }
             )
             
+            # 5. Extract Image URL
             content = response.choices[0].message.content
             image_url = ""
             
-            # Parse Markdown ![alt](url) or Raw URL
-            if "(" in content and ")" in content:
+            # Handle Markdown links vs Raw URLs
+            if "(" in content and ")" in content: # ![Image](https://...)
                 start = content.find("(") + 1
                 end = content.find(")")
                 image_url = content[start:end]
@@ -448,11 +456,11 @@ def generate_ai_background(prompt, client):
                 return image_url, None 
             
         except Exception as e:
-            print(f"DEBUG: Failed {model_id} -> {str(e)}")
+            # Log error internally and try next model
             last_error = str(e)
             continue
             
-    return None, f"Connection Failed. Last Error: {last_error}"    
+    return None, f"All models failed. Last Error: {last_error}" 
 def composite_product(product_img, bg_url):
     """
     1. Removes BG from product.
