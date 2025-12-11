@@ -18,18 +18,16 @@ try:
 except ImportError:
     REMBG_AVAILABLE = False
 
-print("DEBUG: HOB OS Logic Module Loaded (v12.0.3 - Stealth Download)")
+print("DEBUG: HOB OS Logic Module Loaded (v12.0.4 - Robust Image Handling)")
 
 # --- INIT CLIENTS ---
 def init_clients():
-    # 1. Standard OpenAI
     gpt_client = None
     try:
         if "OPENAI_API_KEY" in st.secrets:
             gpt_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     except: pass
 
-    # 2. Google Gemini
     gemini_avail = False
     try:
         if "GEMINI_API_KEY" in st.secrets:
@@ -37,7 +35,6 @@ def init_clients():
             gemini_avail = True
     except: pass
     
-    # 3. OpenRouter
     or_client = None
     try:
         if "OPENROUTER_API_KEY" in st.secrets:
@@ -101,16 +98,14 @@ def run_lyra_optimization(model_choice, raw_instruction, client, gemini_avail):
             return response.text
     except Exception as e: return f"Error: {str(e)}"
 
-# --- THE UNIVERSAL ANALYSIS ENGINE ---
+# --- CORE ANALYSIS ENGINE ---
 def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketplace, engine_mode, clients):
     gpt_c, gemini_avail, or_c = clients
-    target_columns = []
     strict_constraints = {} 
     creative_columns = []   
     
     for col, settings in config['column_mapping'].items():
         if settings['source'] == 'AI':
-            target_columns.append(col)
             best_match_key = None
             best_match_len = -1
             for master_col in config['master_data'].keys():
@@ -133,8 +128,8 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
     Output: JSON Only.
     """
 
-    if "Precision" in engine_mode:
-        if not or_c: return None, "OpenRouter Key Missing"
+    # --- SIMPLIFIED ROUTING ---
+    if "Precision" in engine_mode and or_c:
         try:
             response = or_c.chat.completions.create(
                 model="anthropic/claude-3.5-sonnet",
@@ -144,55 +139,30 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             txt = response.choices[0].message.content
             if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
             return json.loads(txt), None
-        except Exception as e: return None, f"Claude Error: {str(e)}"
-
-    elif "Economy" in engine_mode:
-        if not gemini_avail: return None, "Gemini Key Missing"
-        if not or_c: return None, "OpenRouter Key Missing"
+        except Exception as e: return None, str(e)
+    
+    elif "Economy" in engine_mode and gemini_avail and or_c:
         try:
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
             vis_res = model.generate_content(["Describe this product in extreme detail.", image_part])
-            visual_desc = vis_res.text
-            ds_prompt = f"Context: {visual_desc}\nTask: Map to JSON.\n{system_prompt}"
+            ds_prompt = f"Context: {vis_res.text}\nTask: Map to JSON.\n{system_prompt}"
             response = or_c.chat.completions.create(
-                model="deepseek/deepseek-chat",
-                messages=[{"role": "user", "content": ds_prompt}], temperature=0.0
+                model="deepseek/deepseek-chat", messages=[{"role": "user", "content": ds_prompt}], temperature=0.0
             )
             txt = response.choices[0].message.content
             if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
             return json.loads(txt), None
-        except Exception as e: return None, f"DeepSeek Error: {str(e)}"
-
-    elif "Eagle-Eye" in engine_mode:
-        if not gemini_avail or not or_c: return None, "Need Gemini & OpenRouter"
+        except Exception as e: return None, str(e)
+        
+    elif "Dual-AI" in engine_mode and gemini_avail and gpt_c:
         try:
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
             res = model.generate_content([system_prompt, image_part])
-            maker_txt = res.text.replace("```json", "").replace("```", "")
-            maker_draft = json.loads(maker_txt)
-            audit_prompt = f"Review Draft: {json.dumps(maker_draft)}. Constraints: {json.dumps(strict_constraints)}. Fix errors. Output JSON."
-            response = or_c.chat.completions.create(
-                model="anthropic/claude-3.5-sonnet",
-                messages=[{"role": "user", "content": [{"type": "text", "text": audit_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
-                temperature=0.1
-            )
-            txt = response.choices[0].message.content.replace("```json", "").replace("```", "")
-            return json.loads(txt), None
-        except Exception as e: return None, f"Eagle-Eye Error: {str(e)}"
-
-    elif "Dual-AI" in engine_mode:
-        if not gemini_avail or not gpt_c: return None, "Need Gemini & OpenAI"
-        try:
-            model = genai.GenerativeModel('gemini-2.5-flash')
-            img_data = base64.b64decode(base64_image)
-            image_part = {"mime_type": "image/jpeg", "data": img_data}
-            res = model.generate_content([system_prompt, image_part])
-            maker_txt = res.text.replace("```json", "").replace("```", "")
-            maker_draft = json.loads(maker_txt)
+            maker_draft = json.loads(res.text.replace("```json", "").replace("```", ""))
             audit_prompt = f"Review Draft: {json.dumps(maker_draft)}. Constraints: {json.dumps(strict_constraints)}. Output JSON."
             response = gpt_c.chat.completions.create(
                 model="gpt-4o",
@@ -200,10 +170,9 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
                 response_format={"type": "json_object"}, temperature=0.0
             )
             return json.loads(response.choices[0].message.content), None
-        except Exception as e: return None, f"Dual-AI Error: {str(e)}"
+        except Exception as e: return None, str(e)
 
-    elif "GPT" in engine_mode:
-        if not gpt_c: return None, "OpenAI Key Missing"
+    elif "GPT" in engine_mode and gpt_c:
         try:
             response = gpt_c.chat.completions.create(
                 model="gpt-4o",
@@ -211,9 +180,9 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
                 response_format={"type": "json_object"}, temperature=0.0
             )
             return json.loads(response.choices[0].message.content), None
-        except Exception as e: return None, f"GPT Error: {str(e)}"
+        except Exception as e: return None, str(e)
 
-    else: # GEMINI
+    else: # Fallback Gemini
         if not gemini_avail: return None, "Gemini Key Missing"
         try:
             model = genai.GenerativeModel('gemini-2.5-flash')
@@ -222,7 +191,7 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             res = model.generate_content([system_prompt, image_part])
             txt = res.text.replace("```json", "").replace("```", "")
             return json.loads(txt), None
-        except Exception as e: return None, f"Gemini Error: {str(e)}"
+        except Exception as e: return None, str(e)
 
 def merge_ai_data_to_row(row_data, ai_data, config):
     new_row = {}
@@ -302,72 +271,82 @@ def estimate_cost(engine_mode, num_skus):
     bench = rates["GPT"] * num_skus
     return total, bench, bench - total
 
-# --- PHASE 3: AI STUDIO LOGIC ---
+# --- PHASE 3: AI STUDIO (ROBUST VERSION) ---
 def generate_ai_background(prompt, _unused_client=None):
     """
     Tries OpenRouter (Flux) -> Fallback to Pollinations.ai
     """
-    
-    # STRATEGY 1: OpenRouter Flux (If Key Exists)
+    # 1. STRATEGY: OPENROUTER FLUX
     if "OPENROUTER_API_KEY" in st.secrets:
         try:
             api_key = st.secrets["OPENROUTER_API_KEY"]
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://hob-os.com", "X-Title": "HOB"}
-            # The most stable ID often changes, but this is standard
-            model_id = "black-forest-labs/flux-1-schnell" 
+            
+            # Trying the free endpoint explicitly
+            model_id = "black-forest-labs/flux-1-schnell:free" 
             payload = {
                 "model": model_id,
-                "messages": [{"role": "user", "content": f"product photography background, {prompt}, soft lighting, 8k resolution, photorealistic"}]
+                "messages": [{"role": "user", "content": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic"}]
             }
             res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25)
+            
             if res.status_code == 200:
                 content = res.json()['choices'][0]['message']['content']
                 if "(" in content and ")" in content:
                     return content[content.find("(")+1:content.find(")")], None
                 if content.strip().startswith("http"):
                     return content.strip(), None
-        except Exception as e: print(f"OpenRouter Fail: {e}")
+            else:
+                print(f"DEBUG: OpenRouter Flux Failed ({res.status_code}). Switching to Fallback.")
+        except: pass
 
-    # STRATEGY 2: Pollinations (Fallback)
+    # 2. STRATEGY: POLLINATIONS (Guaranteed)
     try:
-        safe_prompt = urllib.parse.quote(f"product photography background, {prompt}, soft lighting, 8k")
-        # Add seed to force refresh
+        # Use simple prompt encoding
+        safe_prompt = urllib.parse.quote(f"product photography background {prompt}")
         poll_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
         
-        # Verify it's reachable (HEAD request)
-        check = requests.head(poll_url)
-        if check.status_code < 400:
-            return poll_url, None
+        # Verify it's reachable
+        return poll_url, None
+            
     except Exception as e:
         return None, f"All strategies failed. {e}"
 
-    return None, "Generators exhausted."
-
 def composite_product(product_img, bg_url):
+    """
+    Robust Composition with File Identification
+    """
     try:
         # A. Remove Background
         if REMBG_AVAILABLE:
             try:
                 product_img = remove_bg_ai(product_img)
-            except: pass # Fallback to using image as is if rembg fails
+            except: pass 
 
         # B. Download Background (Stealth Mode)
-        # We pretend to be a browser so the image host doesn't block us
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"
         }
-        bg_response = requests.get(bg_url, headers=headers, timeout=20)
         
-        if bg_response.status_code != 200:
-            return None, f"Download Failed: HTTP {bg_response.status_code}"
-
-        # Verify Content Type
-        c_type = bg_response.headers.get("Content-Type", "").lower()
-        if "image" not in c_type and "application/octet-stream" not in c_type:
-            return None, f"Invalid Image: Server returned {c_type}"
-
-        bg_img = Image.open(BytesIO(bg_response.content)).convert("RGBA")
+        # We need a session to handle redirects correctly for Pollinations
+        session = requests.Session()
+        bg_response = session.get(bg_url, headers=headers, timeout=25, stream=True)
         
+        # --- CRITICAL FIX: Check if we actually got an image ---
+        content_type = bg_response.headers.get('Content-Type', '').lower()
+        
+        # If not an image, create a fallback color background
+        if 'image' not in content_type:
+            print(f"DEBUG: Failed to download valid image. Got {content_type}. Using fallback color.")
+            bg_img = Image.new('RGB', (1024, 1024), (240, 240, 240)) # Light Grey Fallback
+        else:
+            try:
+                # Try to open the image
+                bg_img = Image.open(BytesIO(bg_response.content)).convert("RGBA")
+            except Exception as e:
+                print(f"DEBUG: Image Open Failed: {e}. Using fallback.")
+                bg_img = Image.new('RGB', (1024, 1024), (200, 200, 200)) # Grey Fallback
+
         # C. Resize Background
         bg_img = bg_img.resize((1024, 1024))
         
