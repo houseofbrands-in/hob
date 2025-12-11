@@ -242,6 +242,38 @@ else:
 
                     st.session_state.gen_results = final_output_rows
                     status_placeholder.success(f"✅ Batch Complete! Optimized: Processed {total_unique} images for {total_rows} SKUs.")
+                    # --- PHASE 2: CFO DASHBOARD ---
+                    real_cost, bench_cost, money_saved = logic.estimate_cost(arch_mode, total_rows)
+                    
+                    # 1. Log to Database (Async-ish)
+                    db.log_financials(selected_mp, arch_mode, total_rows, real_cost, money_saved)
+                    
+                    # 2. Display The Savings Card
+                    if money_saved > 0:
+                        st.markdown(f"""
+                        <div style="
+                            background: linear-gradient(135deg, #064e3b 0%, #065f46 100%);
+                            border: 1px solid #34d399;
+                            border-radius: 10px;
+                            padding: 20px;
+                            margin: 20px 0;
+                            text-align: center;
+                        ">
+                            <h3 style="color: #34d399; margin:0;">💰 CFO UPDATE: Savings Alert</h3>
+                            <p style="color: #ecfdf5; font-size: 16px; margin-top:5px;">
+                                By using <b>{arch_mode}</b> instead of standard GPT-4o, you just saved:
+                            </p>
+                            <div style="font-size: 42px; font-weight: 800; color: #fff; text-shadow: 0 0 20px rgba(52, 211, 153, 0.5);">
+                                ${money_saved:.4f}
+                            </div>
+                            <div style="display: flex; justify-content: center; gap: 20px; margin-top: 10px; color: #a7f3d0; font-size: 14px;">
+                                <span>📉 Actual Cost: ${real_cost:.4f}</span>
+                                <span>📈 Market Rate: ${bench_cost:.4f}</span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.info(f"💰 Financials: Estimated Batch Cost: ${real_cost:.4f}")
                     time.sleep(1)
                     st.rerun()
 
