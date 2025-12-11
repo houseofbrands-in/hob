@@ -509,10 +509,11 @@ else:
                             time.sleep(1); 
                             st.rerun()
 
-    # === TAB 3: UTILITIES ===
+   # === TAB 3: UTILITIES ===
     with tab_tools:
         st.header("🛠️ Utilities")
-        tool_choice = st.radio("Tool", ["Lyra Prompt", "Vision Guard", "Image Processor"], horizontal=True)
+        # Added "AI Studio" to the list
+        tool_choice = st.radio("Tool", ["Lyra Prompt", "Vision Guard", "Image Processor", "🎨 AI Studio (Flux)"], horizontal=True)
         st.divider()
 
         if tool_choice == "Lyra Prompt":
@@ -556,6 +557,41 @@ else:
                 st.success("Done!")
                 st.download_button("⬇️ Download ZIP", zip_buffer.getvalue(), file_name="images.zip", mime="application/zip")
 
+        # --- PHASE 3: THE AI STUDIO ---
+        elif tool_choice == "🎨 AI Studio (Flux)":
+            st.caption("Generative Background Replacement")
+            st.info("💡 Powered by Flux.1-Schnell. Generates a scene and places your product inside.")
+            
+            c_studio_1, c_studio_2 = st.columns([1, 1])
+            with c_studio_1:
+                studio_img = st.file_uploader("Upload Product", type=["jpg", "png", "webp"])
+            with c_studio_2:
+                scene_prompt = st.text_area("Describe the Scene", placeholder="e.g. On a polished marble podium, sunlight streaming through leaves, luxury vibe", height=100)
+            
+            if studio_img and scene_prompt and st.button("✨ Generate Magic", type="primary"):
+                if not clients[2]: # Check OpenRouter
+                    st.error("⚠️ OpenRouter API Key missing in secrets.")
+                else:
+                    with st.spinner("🎨 Removing background & hallucinating new world..."):
+                        # 1. Generate Background URL
+                        bg_url, err = logic.generate_ai_background(scene_prompt, clients[2]) # clients[2] is OpenRouter
+                        
+                        if bg_url:
+                            # 2. Composite
+                            input_pil = Image.open(studio_img)
+                            final_img, comp_err = logic.composite_product(input_pil, bg_url)
+                            
+                            if final_img:
+                                st.image(final_img, caption="AI Studio Result", use_container_width=True)
+                                
+                                # Download
+                                buf = BytesIO()
+                                final_img.save(buf, format="JPEG", quality=95)
+                                st.download_button("⬇️ Download Asset", buf.getvalue(), file_name="ai_studio_asset.jpg", mime="image/jpeg")
+                            else:
+                                st.error(f"Composition Error: {comp_err}")
+                        else:
+                            st.error(f"Generation Error: {err}")
     # === TAB 4: ADMIN ===
     if st.session_state.user_role == "admin":
         with tab_admin:
