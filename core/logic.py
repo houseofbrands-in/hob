@@ -18,18 +18,18 @@ try:
 except ImportError:
     REMBG_AVAILABLE = False
 
-print("DEBUG: HOB OS Logic Module Loaded (v12.0.2 - Clean Build)")
+print("DEBUG: HOB OS Logic Module Loaded (v12.0.3 - Stealth Download)")
 
 # --- INIT CLIENTS ---
 def init_clients():
-    # 1. Standard OpenAI (Direct)
+    # 1. Standard OpenAI
     gpt_client = None
     try:
         if "OPENAI_API_KEY" in st.secrets:
             gpt_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     except: pass
 
-    # 2. Google Gemini (Direct)
+    # 2. Google Gemini
     gemini_avail = False
     try:
         if "GEMINI_API_KEY" in st.secrets:
@@ -37,7 +37,7 @@ def init_clients():
             gemini_avail = True
     except: pass
     
-    # 3. OpenRouter (Multi-Model Adapter)
+    # 3. OpenRouter
     or_client = None
     try:
         if "OPENROUTER_API_KEY" in st.secrets:
@@ -104,8 +104,6 @@ def run_lyra_optimization(model_choice, raw_instruction, client, gemini_avail):
 # --- THE UNIVERSAL ANALYSIS ENGINE ---
 def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketplace, engine_mode, clients):
     gpt_c, gemini_avail, or_c = clients
-    
-    # Prepare Constraints
     target_columns = []
     strict_constraints = {} 
     creative_columns = []   
@@ -126,7 +124,6 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             if best_match_key: strict_constraints[col] = config['master_data'][best_match_key]
             else: creative_columns.append(col)
 
-    # Base System Prompt
     system_prompt = f"""
     Role: E-commerce Expert for {marketplace}.
     Task: Analyze image and generate JSON.
@@ -136,20 +133,12 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
     Output: JSON Only.
     """
 
-    # --- ROUTING LOGIC ---
-
-    # 1. CLAUDE 3.5 SONNET (Vision King)
     if "Precision" in engine_mode:
         if not or_c: return None, "OpenRouter Key Missing"
         try:
             response = or_c.chat.completions.create(
                 model="anthropic/claude-3.5-sonnet",
-                messages=[
-                    {"role": "user", "content": [
-                        {"type": "text", "text": system_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]}
-                ],
+                messages=[{"role": "user", "content": [{"type": "text", "text": system_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
                 temperature=0.1
             )
             txt = response.choices[0].message.content
@@ -157,137 +146,84 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             return json.loads(txt), None
         except Exception as e: return None, f"Claude Error: {str(e)}"
 
-    # 2. DEEPSEEK V3 (Economy)
     elif "Economy" in engine_mode:
-        if not gemini_avail: return None, "Gemini Key Missing (Required for Vision)"
+        if not gemini_avail: return None, "Gemini Key Missing"
         if not or_c: return None, "OpenRouter Key Missing"
         try:
-            # Step A: Vision (Gemini)
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
-            vis_prompt = "Describe this product in extreme detail: Fabric, Color, Pattern, Neckline, Sleeves, Fit, Branding."
-            vis_res = model.generate_content([vis_prompt, image_part])
+            vis_res = model.generate_content(["Describe this product in extreme detail.", image_part])
             visual_desc = vis_res.text
-            
-            # Step B: Logic (DeepSeek)
-            ds_prompt = f"""
-            Context: {visual_desc}
-            Task: Map this description to the following JSON schema.
-            {system_prompt}
-            """
+            ds_prompt = f"Context: {visual_desc}\nTask: Map to JSON.\n{system_prompt}"
             response = or_c.chat.completions.create(
                 model="deepseek/deepseek-chat",
-                messages=[{"role": "user", "content": ds_prompt}],
-                temperature=0.0
+                messages=[{"role": "user", "content": ds_prompt}], temperature=0.0
             )
             txt = response.choices[0].message.content
             if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
             return json.loads(txt), None
         except Exception as e: return None, f"DeepSeek Error: {str(e)}"
 
-    # 3. EAGLE-EYE DUAL (Gemini + Claude Audit)
     elif "Eagle-Eye" in engine_mode:
-        if not gemini_avail or not or_c: return None, "Need Gemini and OpenRouter Keys"
+        if not gemini_avail or not or_c: return None, "Need Gemini & OpenRouter"
         try:
-            # Maker (Gemini)
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
             res = model.generate_content([system_prompt, image_part])
-            maker_txt = res.text
-            if "```json" in maker_txt: maker_txt = maker_txt.split("```json")[1].split("```")[0]
-            elif "```" in maker_txt: maker_txt = maker_txt.split("```")[1].split("```")[0]
+            maker_txt = res.text.replace("```json", "").replace("```", "")
             maker_draft = json.loads(maker_txt)
-            
-            # Checker (Claude)
-            audit_prompt = f"""
-            You are the QUALITY CONTROL CHIEF.
-            1. Look at the image.
-            2. Review this Draft JSON: {json.dumps(maker_draft)}
-            3. CRITICAL: If the fabric, color, or neck/sleeve type in the Draft does not match the Image perfectly, CORRECT IT.
-            4. Ensure these allowed options are respected: {json.dumps(strict_constraints)}
-            5. Output the cleaned, final JSON.
-            """
-            
+            audit_prompt = f"Review Draft: {json.dumps(maker_draft)}. Constraints: {json.dumps(strict_constraints)}. Fix errors. Output JSON."
             response = or_c.chat.completions.create(
                 model="anthropic/claude-3.5-sonnet",
-                messages=[
-                    {"role": "user", "content": [
-                        {"type": "text", "text": audit_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]}
-                ],
+                messages=[{"role": "user", "content": [{"type": "text", "text": audit_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
                 temperature=0.1
             )
-            txt = response.choices[0].message.content
-            if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
+            txt = response.choices[0].message.content.replace("```json", "").replace("```", "")
             return json.loads(txt), None
-            
         except Exception as e: return None, f"Eagle-Eye Error: {str(e)}"
 
-    # 4. STANDARD DUAL (Gemini + GPT-4o Audit)
     elif "Dual-AI" in engine_mode:
-        if not gemini_avail or not gpt_c: return None, "Need both Gemini and OpenAI Keys"
+        if not gemini_avail or not gpt_c: return None, "Need Gemini & OpenAI"
         try:
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
             res = model.generate_content([system_prompt, image_part])
-            maker_txt = res.text
-            if "```json" in maker_txt: maker_txt = maker_txt.split("```json")[1].split("```")[0]
-            elif "```" in maker_txt: maker_txt = maker_txt.split("```")[1].split("```")[0]
+            maker_txt = res.text.replace("```json", "").replace("```", "")
             maker_draft = json.loads(maker_txt)
-            
-            audit_prompt = f"""
-            You are the AUDITOR.
-            Visual Inputs provided.
-            Draft JSON: {json.dumps(maker_draft)}
-            Constraints: {json.dumps(strict_constraints)}
-            Mission: Verify Draft against Image. Fix errors.
-            Output: Final JSON.
-            """
+            audit_prompt = f"Review Draft: {json.dumps(maker_draft)}. Constraints: {json.dumps(strict_constraints)}. Output JSON."
             response = gpt_c.chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "Auditor Mode. Temp=0."},
-                    {"role": "user", "content": [{"type": "text", "text": audit_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
-                ],
+                messages=[{"role": "user", "content": [{"type": "text", "text": audit_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
                 response_format={"type": "json_object"}, temperature=0.0
             )
             return json.loads(response.choices[0].message.content), None
         except Exception as e: return None, f"Dual-AI Error: {str(e)}"
 
-    # 5. GPT-4o ONLY (Logic Pro) -- [RESTORED]
     elif "GPT" in engine_mode:
         if not gpt_c: return None, "OpenAI Key Missing"
         try:
             response = gpt_c.chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "E-commerce Expert."},
-                    {"role": "user", "content": [{"type": "text", "text": system_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
-                ],
+                messages=[{"role": "user", "content": [{"type": "text", "text": system_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
                 response_format={"type": "json_object"}, temperature=0.0
             )
             return json.loads(response.choices[0].message.content), None
         except Exception as e: return None, f"GPT Error: {str(e)}"
 
-    # 6. GEMINI ONLY
-    else:
+    else: # GEMINI
         if not gemini_avail: return None, "Gemini Key Missing"
         try:
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
             res = model.generate_content([system_prompt, image_part])
-            txt = res.text
-            if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
-            elif "```" in txt: txt = txt.split("```")[1].split("```")[0]
+            txt = res.text.replace("```json", "").replace("```", "")
             return json.loads(txt), None
         except Exception as e: return None, f"Gemini Error: {str(e)}"
 
-# --- HELPER: MERGE AI DATA ---
 def merge_ai_data_to_row(row_data, ai_data, config):
     new_row = {}
     mapping = config['column_mapping']
@@ -313,22 +249,11 @@ def merge_ai_data_to_row(row_data, ai_data, config):
         new_row[col] = val
     return new_row
 
-# --- WORKER ---
 def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode, active_kws, selected_mp):
     u_key = str(row_data.get(img_col, "")).strip()
     sku_label = str(row_data.get(sku_col, "Unknown SKU"))
+    result_package = {"success": False, "sku": sku_label, "u_key": u_key, "img_display": None, "ai_data": {}, "final_row": {}, "error": None}
     
-    result_package = {
-        "success": False,
-        "sku": sku_label,
-        "u_key": u_key,
-        "img_display": None,
-        "ai_data": {},
-        "final_row": {},
-        "error": None
-    }
-    
-    # Download
     download_url = u_key 
     if "dropbox.com" in download_url: download_url = download_url.replace("?dl=0", "") + "&dl=1"
     
@@ -348,13 +273,11 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     hints = ", ".join([f"{k}: {v}" for k,v in row_data.items() if k != img_col and str(v).lower() != "nan"])
     hints = smart_truncate(hints, 300)
 
-    # Call Universal Engine
     ai_data = {}; err = None
     for attempt in range(2):
         try:
             ai_data, err = analyze_image_multimodal(base64_img, hints, active_kws, config, selected_mp, arch_mode, clients)
-            if err: 
-                time.sleep(2); continue
+            if err: time.sleep(2); continue
             break
         except Exception as e: err = str(e)
 
@@ -364,103 +287,85 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     result_package["ai_data"] = ai_data
     result_package["success"] = True
     result_package["final_row"] = merge_ai_data_to_row(row_data, ai_data, config)
-    
     return result_package
 
-# --- PHASE 2: COST ESTIMATION ---
 def estimate_cost(engine_mode, num_skus):
-    """
-    Returns (estimated_cost, benchmark_cost_gpt4, savings)
-    """
-    # Base rates per SKU (USD)
-    rates = {
-        "GPT": 0.0200, "Claude": 0.0100, "DeepSeek": 0.0020,
-        "Gemini": 0.0005, "Eagle-Eye": 0.0105, "Dual-AI": 0.0205
-    }
-    
-    active_rate = 0.02 
+    rates = {"GPT": 0.02, "Claude": 0.01, "DeepSeek": 0.002, "Gemini": 0.0005, "Eagle-Eye": 0.0105, "Dual-AI": 0.0205}
+    active_rate = 0.02
     if "DeepSeek" in engine_mode: active_rate = rates["DeepSeek"]
     elif "Precision" in engine_mode: active_rate = rates["Claude"]
     elif "Eagle-Eye" in engine_mode: active_rate = rates["Eagle-Eye"]
     elif "Dual-AI" in engine_mode: active_rate = rates["Dual-AI"]
     elif "Standard" in engine_mode: active_rate = rates["Gemini"]
-    elif "Logic Pro" in engine_mode: active_rate = rates["GPT"]
     
-    total_cost = active_rate * num_skus
-    benchmark_cost = rates["GPT"] * num_skus
-    savings = benchmark_cost - total_cost
-    return total_cost, benchmark_cost, savings
+    total = active_rate * num_skus
+    bench = rates["GPT"] * num_skus
+    return total, bench, bench - total
 
-# --- PHASE 3: THE AI STUDIO (FINAL FAIL-SAFE) ---
+# --- PHASE 3: AI STUDIO LOGIC ---
 def generate_ai_background(prompt, _unused_client=None):
     """
-    Logic:
-    1. Try OpenRouter 'flux-1-schnell' (Direct Request).
-    2. If that fails, fallback to Pollinations.ai (No key required).
+    Tries OpenRouter (Flux) -> Fallback to Pollinations.ai
     """
     
-    # --- STRATEGY 1: OPENROUTER (If Key Exists) ---
+    # STRATEGY 1: OpenRouter Flux (If Key Exists)
     if "OPENROUTER_API_KEY" in st.secrets:
         try:
             api_key = st.secrets["OPENROUTER_API_KEY"]
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://hob-os-app.com",
-                "X-Title": "HOB OS"
-            }
-            # The most reliable Flux Chat ID
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://hob-os.com", "X-Title": "HOB"}
+            # The most stable ID often changes, but this is standard
             model_id = "black-forest-labs/flux-1-schnell" 
-            
             payload = {
                 "model": model_id,
-                "messages": [{
-                    "role": "user",
-                    "content": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
-                }]
+                "messages": [{"role": "user", "content": f"product photography background, {prompt}, soft lighting, 8k resolution, photorealistic"}]
             }
-            
             res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25)
-            
             if res.status_code == 200:
                 content = res.json()['choices'][0]['message']['content']
-                # Parse markdown or raw URL
                 if "(" in content and ")" in content:
                     return content[content.find("(")+1:content.find(")")], None
                 if content.strip().startswith("http"):
                     return content.strip(), None
-            else:
-                print(f"DEBUG: OpenRouter Flux Failed ({res.status_code}). Switching to Pollinations.")
+        except Exception as e: print(f"OpenRouter Fail: {e}")
 
-        except Exception as e:
-            print(f"DEBUG: OpenRouter Exception: {e}")
-
-    # --- STRATEGY 2: POLLINATIONS.AI (Guaranteed) ---
-    # This generates a real image URL immediately.
+    # STRATEGY 2: Pollinations (Fallback)
     try:
         safe_prompt = urllib.parse.quote(f"product photography background, {prompt}, soft lighting, 8k")
-        # Add random seed to force new image on every click
+        # Add seed to force refresh
         poll_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
         
-        # Simple health check
+        # Verify it's reachable (HEAD request)
         check = requests.head(poll_url)
         if check.status_code < 400:
             return poll_url, None
-            
     except Exception as e:
-        return None, f"All strategies failed. Fallback error: {str(e)}"
+        return None, f"All strategies failed. {e}"
 
-    return None, "All strategies exhausted."
+    return None, "Generators exhausted."
 
-# --- COMPOSITING ---
 def composite_product(product_img, bg_url):
     try:
-        # A. Prepare Product
+        # A. Remove Background
         if REMBG_AVAILABLE:
-            product_img = remove_bg_ai(product_img)
+            try:
+                product_img = remove_bg_ai(product_img)
+            except: pass # Fallback to using image as is if rembg fails
+
+        # B. Download Background (Stealth Mode)
+        # We pretend to be a browser so the image host doesn't block us
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        bg_response = requests.get(bg_url, headers=headers, timeout=20)
         
-        # B. Get Background
-        bg_response = requests.get(bg_url, timeout=20)
+        if bg_response.status_code != 200:
+            return None, f"Download Failed: HTTP {bg_response.status_code}"
+
+        # Verify Content Type
+        c_type = bg_response.headers.get("Content-Type", "").lower()
+        if "image" not in c_type and "application/octet-stream" not in c_type:
+            return None, f"Invalid Image: Server returned {c_type}"
+
         bg_img = Image.open(BytesIO(bg_response.content)).convert("RGBA")
         
         # C. Resize Background
@@ -471,7 +376,6 @@ def composite_product(product_img, bg_url):
         target_h = int(1024 * 0.7)
         ratio = target_h / p_h
         target_w = int(p_w * ratio)
-        
         product_resized = product_img.resize((target_w, target_h), Image.LANCZOS)
         
         # E. Center
@@ -486,4 +390,4 @@ def composite_product(product_img, bg_url):
         return final_comp.convert("RGB"), None
         
     except Exception as e:
-        return None, str(e)
+        return None, f"Composite Error: {str(e)}"
