@@ -394,55 +394,64 @@ def estimate_cost(engine_mode, num_skus):
     
     return total_cost, benchmark_cost, savings
 
-# --- PHASE 3: THE AI STUDIO ---
+# --- PHASE 3: THE AI STUDIO (UPDATED) ---
 def generate_ai_background(prompt, client):
     """
-    Uses OpenRouter (Flux-1 Schnell) to generate a background image.
+    Uses OpenRouter to generate a background image.
+    Implements a 'Waterfall' strategy: Tries Flux Schnell -> Flux Dev -> SDXL.
+    This prevents crashes if one model ID changes or goes offline.
     """
     if not client: return None, "OpenRouter Client not initialized"
     
-    try:
-        # 1. Enhanced Prompt for Flux
-        full_prompt = f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
-        
-        # 2. Call OpenRouter
-        response = client.chat.completions.create(
-            model="black-forest-labs/flux-1-schnell",
-            messages=[{"role": "user", "content": full_prompt}],
-        )
-        
-        # 3. Flux usually returns a URL in the content or a specific image object
-        # Note: OpenRouter's Image API format varies. Assuming standard OpenAI Image format or Text response containing URL.
-        # For Chat Completions with Image models, the URL is often in the content.
-        
-        # *Standard OpenAI Image API pattern (if supported by adapter)*:
-        # resp = client.images.generate(model=..., prompt=...) 
-        # But OpenRouter often uses ChatCompletions for everything.
-        
-        # Let's try the standard Generation pattern first, fallback to Chat.
-        # Since we initialized 'client' as OpenAI object, let's try strict generation if model supports it.
-        # However, Flux on OpenRouter is often text-to-image via specific endpoint. 
-        # Let's stick to the most robust method: The Chat Completion return usually contains the URL in Markdown.
-        
-        content = response.choices[0].message.content
-        image_url = ""
-        if "(" in content and ")" in content:
-            # Extract URL from markdown link ![image](url)
-            start = content.find("(") + 1
-            end = content.find(")")
-            image_url = content[start:end]
-        else:
-            # Fallback: Sometimes it's just the raw URL
-            image_url = content.strip()
+    # PRIORITY LIST OF MODELS
+    # 1. Flux 1 Dev (Often more stable/available than Schnell on OpenRouter)
+    # 2. Flux 1 Schnell (Fastest)
+    # 3. Stable Diffusion XL (Reliable Fallback)
+    candidate_models = [
+        "black-forest-labs/flux-1-dev",     
+        "black-forest-labs/flux-1-schnell", 
+        "stabilityai/stable-diffusion-xl-base-1.0" 
+    ]
+    
+    last_error = None
+    
+    for model_id in candidate_models:
+        try:
+            # Enhanced Prompt
+            full_prompt = f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
+            
+            # Call OpenRouter
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": full_prompt}],
+            )
+            
+            # Extract URL (Handles different return formats)
+            content = response.choices[0].message.content
+            image_url = ""
+            
+            # Format A: Markdown Link ![img](http...)
+            if "(" in content and ")" in content:
+                start = content.find("(") + 1
+                end = content.find(")")
+                image_url = content[start:end]
+            # Format B: Raw URL
+            else:
+                image_url = content.strip()
 
-        if not image_url.startswith("http"):
-            return None, f"Failed to parse URL: {content[:50]}..."
-
-        return image_url, None
-
-    except Exception as e:
-        return None, str(e)
-
+            # Verify URL
+            if image_url.startswith("http"):
+                # Success! Return immediately.
+                return image_url, None 
+            
+        except Exception as e:
+            # Log error and continue to the next model in the list
+            last_error = str(e)
+            continue
+            
+    # If all models fail
+    return None, f"All models failed. Last error: {last_error}"
+    
 def composite_product(product_img, bg_url):
     """
     1. Removes BG from product.
