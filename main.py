@@ -261,7 +261,7 @@ else:
                         sku_col: st.column_config.TextColumn("SKU", disabled=True)
                     }
                     
-                    edited_df = st.data_editor(
+                    st.data_editor(
                         df_ai_raw, 
                         key="editor_grid",
                         use_container_width=True,
