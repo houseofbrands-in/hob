@@ -5,6 +5,7 @@ import base64
 import requests
 import time
 import difflib
+import urllib.parse
 from openai import OpenAI
 import google.generativeai as genai
 from io import BytesIO
@@ -16,6 +17,8 @@ try:
     REMBG_AVAILABLE = True
 except ImportError:
     REMBG_AVAILABLE = False
+
+print("DEBUG: HOB OS Logic Module Loaded (v12.0.2 - Clean Build)")
 
 # --- INIT CLIENTS ---
 def init_clients():
@@ -368,20 +371,14 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
 def estimate_cost(engine_mode, num_skus):
     """
     Returns (estimated_cost, benchmark_cost_gpt4, savings)
-    Prices are approximate per-SKU averages (Image + ~500 tokens).
     """
     # Base rates per SKU (USD)
     rates = {
-        "GPT": 0.0200,          # GPT-4o (Expensive)
-        "Claude": 0.0100,       # Sonnet 3.5
-        "DeepSeek": 0.0020,     # DeepSeek V3 (Very Cheap)
-        "Gemini": 0.0005,       # Flash (Extremely Cheap)
-        "Eagle-Eye": 0.0105,    # Gemini + Claude
-        "Dual-AI": 0.0205,      # Gemini + GPT-4o
+        "GPT": 0.0200, "Claude": 0.0100, "DeepSeek": 0.0020,
+        "Gemini": 0.0005, "Eagle-Eye": 0.0105, "Dual-AI": 0.0205
     }
     
-    # Determine active rate
-    active_rate = 0.02 # Default to high
+    active_rate = 0.02 
     if "DeepSeek" in engine_mode: active_rate = rates["DeepSeek"]
     elif "Precision" in engine_mode: active_rate = rates["Claude"]
     elif "Eagle-Eye" in engine_mode: active_rate = rates["Eagle-Eye"]
@@ -392,19 +389,17 @@ def estimate_cost(engine_mode, num_skus):
     total_cost = active_rate * num_skus
     benchmark_cost = rates["GPT"] * num_skus
     savings = benchmark_cost - total_cost
-    
     return total_cost, benchmark_cost, savings
 
-# --- PHASE 3: THE AI STUDIO (FAIL-SAFE VERSION) ---
+# --- PHASE 3: THE AI STUDIO (FINAL FAIL-SAFE) ---
 def generate_ai_background(prompt, _unused_client=None):
     """
-    Generates a background image.
-    Strategy 1: OpenRouter (Flux Schnell) via Chat Endpoint.
-    Strategy 2: Pollinations.ai (No Key Required, Guaranteed Fallback).
+    Logic:
+    1. Try OpenRouter 'flux-1-schnell' (Direct Request).
+    2. If that fails, fallback to Pollinations.ai (No key required).
     """
-    import urllib.parse
     
-    # --- STRATEGY 1: OPENROUTER (High Quality) ---
+    # --- STRATEGY 1: OPENROUTER (If Key Exists) ---
     if "OPENROUTER_API_KEY" in st.secrets:
         try:
             api_key = st.secrets["OPENROUTER_API_KEY"]
@@ -414,8 +409,8 @@ def generate_ai_background(prompt, _unused_client=None):
                 "HTTP-Referer": "https://hob-os-app.com",
                 "X-Title": "HOB OS"
             }
-            # Try the specific Free Tier ID for Flux
-            model_id = "black-forest-labs/flux-1-schnell:free"
+            # The most reliable Flux Chat ID
+            model_id = "black-forest-labs/flux-1-schnell" 
             
             payload = {
                 "model": model_id,
@@ -425,63 +420,53 @@ def generate_ai_background(prompt, _unused_client=None):
                 }]
             }
             
-            res = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=25
-            )
+            res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25)
             
             if res.status_code == 200:
                 content = res.json()['choices'][0]['message']['content']
+                # Parse markdown or raw URL
                 if "(" in content and ")" in content:
                     return content[content.find("(")+1:content.find(")")], None
                 if content.strip().startswith("http"):
                     return content.strip(), None
             else:
-                print(f"DEBUG: OpenRouter failed ({res.status_code}). Switching to Fallback.")
-                
-        except Exception as e:
-            print(f"DEBUG: OpenRouter Error: {e}")
+                print(f"DEBUG: OpenRouter Flux Failed ({res.status_code}). Switching to Pollinations.")
 
-    # --- STRATEGY 2: POLLINATIONS.AI (Guaranteed Fallback) ---
-    # This works without an API key and is excellent for demos.
+        except Exception as e:
+            print(f"DEBUG: OpenRouter Exception: {e}")
+
+    # --- STRATEGY 2: POLLINATIONS.AI (Guaranteed) ---
+    # This generates a real image URL immediately.
     try:
-        encoded_prompt = urllib.parse.quote(f"product photography background, {prompt}, bokeh, soft lighting, 8k, photorealistic")
-        # Generate a direct URL. Pollinations generates on-the-fly when this URL is requested.
-        fallback_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
+        safe_prompt = urllib.parse.quote(f"product photography background, {prompt}, soft lighting, 8k")
+        # Add random seed to force new image on every click
+        poll_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
         
-        # Verify it actually works (Head request)
-        check = requests.head(fallback_url)
+        # Simple health check
+        check = requests.head(poll_url)
         if check.status_code < 400:
-            return fallback_url, None
+            return poll_url, None
             
     except Exception as e:
         return None, f"All strategies failed. Fallback error: {str(e)}"
 
-    return None, "All generation strategies exhausted."
-    
+    return None, "All strategies exhausted."
+
 # --- COMPOSITING ---
 def composite_product(product_img, bg_url):
-    """
-    1. Removes BG from product.
-    2. Downloads AI Background.
-    3. Pastes Product onto Background.
-    """
     try:
-        # A. Prepare Product (Remove BG)
+        # A. Prepare Product
         if REMBG_AVAILABLE:
             product_img = remove_bg_ai(product_img)
         
         # B. Get Background
-        bg_response = requests.get(bg_url)
+        bg_response = requests.get(bg_url, timeout=20)
         bg_img = Image.open(BytesIO(bg_response.content)).convert("RGBA")
         
-        # C. Resize Background to standard 1024x1024 (Flux default)
+        # C. Resize Background
         bg_img = bg_img.resize((1024, 1024))
         
-        # D. Resize Product to fit nicely (e.g., 70% of height)
-        # Calculate aspect ratio
+        # D. Resize Product
         p_w, p_h = product_img.size
         target_h = int(1024 * 0.7)
         ratio = target_h / p_h
@@ -489,10 +474,10 @@ def composite_product(product_img, bg_url):
         
         product_resized = product_img.resize((target_w, target_h), Image.LANCZOS)
         
-        # E. Center Position
+        # E. Center
         bg_w, bg_h = bg_img.size
         offset_x = (bg_w - target_w) // 2
-        offset_y = (bg_h - target_h) // 2 + 50 # Slightly lower than center looks better
+        offset_y = (bg_h - target_h) // 2 + 50
         
         # F. Paste
         final_comp = bg_img.copy()
