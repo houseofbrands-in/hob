@@ -6,6 +6,7 @@ import requests
 import time
 import difflib
 import urllib.parse
+import re
 from openai import OpenAI
 import google.generativeai as genai
 from io import BytesIO
@@ -18,7 +19,8 @@ try:
     REMBG_AVAILABLE = True
 except Exception as e:
     REMBG_AVAILABLE = False
-    REMBG_ERROR = str(e) # Save the actual error message
+    REMBG_ERROR = str(e)
+
 # --- INIT CLIENTS ---
 def init_clients():
     gpt_client = None
@@ -50,8 +52,12 @@ def parse_master_data(file):
     df = pd.read_excel(file)
     valid_options = {}
     for col in df.columns:
-        options = df[col].dropna().astype(str).unique().tolist()
-        if len(options) > 0: valid_options[col] = options
+        # Drop NaNs, convert to string, strip whitespace
+        options = df[col].dropna().astype(str).str.strip().tolist()
+        # Remove empty strings and duplicates
+        options = list(set([o for o in options if o]))
+        if len(options) > 0: 
+            valid_options[col] = options
     return valid_options
 
 def smart_truncate(text, max_length):
@@ -64,20 +70,42 @@ def smart_truncate(text, max_length):
     return truncated.strip()
 
 def enforce_master_data_fallback(value, options):
+    """
+    Strictly maps AI output to the provided Master Data options.
+    Prioritizes exact matches -> case-insensitive matches -> containment -> fuzzy.
+    """
     if not value: return ""
-    ai_text = str(value).strip().lower()
+    ai_text = str(value).strip()
+    ai_lower = ai_text.lower()
+    
+    # 1. Exact Match (Case Insensitive)
     for opt in options:
-        if str(opt).strip().lower() == ai_text: return opt
+        if str(opt).strip().lower() == ai_lower: 
+            return opt
+
+    # 2. Containment (e.g. AI: "Dark Navy Blue", Option: "Navy Blue")
+    # We sort options by length (descending) to match the most specific option first
     sorted_options = sorted(options, key=lambda x: len(str(x)), reverse=True)
     for opt in sorted_options:
         opt_val = str(opt).strip().lower()
         if not opt_val: continue
-        if opt_val in ai_text: return opt
-    matches = difflib.get_close_matches(ai_text, [str(o).lower() for o in options], n=1, cutoff=0.7)
+        # Check if option is inside AI text (AI said too much)
+        if opt_val in ai_lower: 
+            return opt
+        # Check if AI text is inside option (AI said too little, risky but useful)
+        if ai_lower in opt_val and len(ai_lower) > 3:
+            return opt
+
+    # 3. Fuzzy Match (Last Resort - only if high confidence)
+    # cutoff=0.8 means it must be very similar
+    matches = difflib.get_close_matches(ai_lower, [str(o).lower() for o in options], n=1, cutoff=0.8)
     if matches:
         match_lower = matches[0]
         for opt in options:
-            if str(opt).lower() == match_lower: return opt
+            if str(opt).lower() == match_lower: 
+                return opt
+                
+    # 4. Failure: Return original (Human will see it's wrong because it won't match dropdown)
     return value
 
 def run_lyra_optimization(model_choice, raw_instruction, client, gemini_avail):
@@ -100,13 +128,18 @@ def run_lyra_optimization(model_choice, raw_instruction, client, gemini_avail):
 # --- CORE ANALYSIS ENGINE ---
 def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketplace, engine_mode, clients):
     gpt_c, gemini_avail, or_c = clients
+    
+    # SEPARATE COLUMNS: STRICT (Master Data) vs CREATIVE (Free Text)
     strict_constraints = {} 
     creative_columns = []   
     
     for col, settings in config['column_mapping'].items():
         if settings['source'] == 'AI':
+            # Find matching master data key
             best_match_key = None
             best_match_len = -1
+            
+            # Exact or partial match on column name
             for master_col in config['master_data'].keys():
                 c_clean = col.lower().strip()
                 m_clean = master_col.lower().strip()
@@ -115,78 +148,113 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
                 elif m_clean in c_clean:
                     if len(m_clean) > best_match_len:
                         best_match_len = len(m_clean); best_match_key = master_col
-            if best_match_key: strict_constraints[col] = config['master_data'][best_match_key]
-            else: creative_columns.append(col)
+            
+            if best_match_key: 
+                strict_constraints[col] = config['master_data'][best_match_key]
+            else: 
+                creative_columns.append(col)
 
+    # --- CONSTRUCT THE "SAAS GRADE" SYSTEM PROMPT ---
     system_prompt = f"""
-    Role: E-commerce Expert for {marketplace}.
-    Task: Analyze image and generate JSON.
-    SECTION A: ALLOWED OPTIONS: {json.dumps(strict_constraints)}
-    SECTION B: CREATIVE: {creative_columns} - Keywords: {keywords}
-    Hints: {user_hints}
-    Output: JSON Only.
+    ROLE: You are the Chief Catalog Compliance Officer for {marketplace}.
+    GOAL: Extract product attributes from the image with 100% accuracy based on the provided schemas.
+
+    --- SECTION A: STRICT COMPLIANCE FIELDS (Validation Required) ---
+    For the following JSON keys, you MUST select ONE value from the provided list.
+    STRICT RULE: Do not invent new values. Do not use synonyms. If the image is unclear, select the closest valid option.
+    
+    SCHEMA:
+    {json.dumps(strict_constraints, indent=2)}
+
+    --- SECTION B: CREATIVE FIELDS (SEO Optimized) ---
+    For these keys, generate engaging, high-ranking content using these keywords: [{keywords}]
+    KEYS: {creative_columns}
+
+    --- SECTION C: CONTEXT ---
+    User Hints: {user_hints}
+
+    OUTPUT FORMAT: Return ONLY a raw JSON object. No markdown formatting.
     """
 
+    # --- ENGINE SWITCHING LOGIC ---
+    
+    # 1. PRECISION (Claude 3.5 Sonnet) - Best for Complex Visual Reasoning
     if "Precision" in engine_mode and or_c:
         try:
             response = or_c.chat.completions.create(
                 model="anthropic/claude-3.5-sonnet",
-                messages=[{"role": "user", "content": [{"type": "text", "text": system_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
-                temperature=0.1
+                messages=[{
+                    "role": "user", 
+                    "content": [
+                        {"type": "text", "text": system_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]
+                }],
+                temperature=0.0 # Strictness requires low temp
             )
             txt = response.choices[0].message.content
+            # Clean Markdown
             if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
+            elif "```" in txt: txt = txt.split("```")[1]
             return json.loads(txt), None
         except Exception as e: return None, str(e)
     
+    # 2. ECONOMY (DeepSeek via OpenRouter) - Cost effective
     elif "Economy" in engine_mode and gemini_avail and or_c:
         try:
+            # Step 1: Use Gemini for Vision (Free/Cheap)
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
-            vis_res = model.generate_content(["Describe this product in extreme detail.", image_part])
-            ds_prompt = f"Context: {vis_res.text}\nTask: Map to JSON.\n{system_prompt}"
+            vis_res = model.generate_content(["Describe this product's visual attributes in detail (color, neck, sleeves, pattern, material).", image_part])
+            
+            # Step 2: Use DeepSeek for Logic/JSON mapping
+            ds_prompt = f"VISUAL DATA: {vis_res.text}\n\nTASK: Map the visual data to the following JSON schema.\n{system_prompt}"
             response = or_c.chat.completions.create(
-                model="deepseek/deepseek-chat", messages=[{"role": "user", "content": ds_prompt}], temperature=0.0
+                model="deepseek/deepseek-chat", 
+                messages=[{"role": "user", "content": ds_prompt}], 
+                temperature=0.0
             )
             txt = response.choices[0].message.content
             if "```json" in txt: txt = txt.split("```json")[1].split("```")[0]
             return json.loads(txt), None
         except Exception as e: return None, str(e)
         
+    # 3. DUAL-AI AUDIT (Gemini Generates -> GPT-4o Corrects) - High Accuracy
     elif "Dual-AI" in engine_mode and gemini_avail and gpt_c:
         try:
+            # Maker (Gemini)
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
             res = model.generate_content([system_prompt, image_part])
-            maker_draft = json.loads(res.text.replace("```json", "").replace("```", ""))
-            audit_prompt = f"Review Draft: {json.dumps(maker_draft)}. Constraints: {json.dumps(strict_constraints)}. Output JSON."
+            maker_txt = res.text.replace("```json", "").replace("```", "")
+            
+            # Auditor (GPT-4o)
+            audit_prompt = f"""
+            Review this JSON draft against the strict allowed options. Fix any values that are not in the allowed lists.
+            DRAFT: {maker_txt}
+            CONSTRAINTS: {json.dumps(strict_constraints)}
+            """
             response = gpt_c.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "user", "content": [{"type": "text", "text": audit_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
-                response_format={"type": "json_object"}, temperature=0.0
+                response_format={"type": "json_object"}, 
+                temperature=0.0
             )
             return json.loads(response.choices[0].message.content), None
         except Exception as e: return None, str(e)
 
-    elif "GPT" in engine_mode and gpt_c:
-        try:
-            response = gpt_c.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": [{"type": "text", "text": system_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
-                response_format={"type": "json_object"}, temperature=0.0
-            )
-            return json.loads(response.choices[0].message.content), None
-        except Exception as e: return None, str(e)
-
+    # 4. STANDARD (Gemini 2.5 Flash) - Balanced
     else: 
         if not gemini_avail: return None, "Gemini Key Missing"
         try:
             model = genai.GenerativeModel('gemini-2.5-flash')
             img_data = base64.b64decode(base64_image)
             image_part = {"mime_type": "image/jpeg", "data": img_data}
-            res = model.generate_content([system_prompt, image_part])
+            # Gemini needs forceful prompting for JSON
+            final_prompt = system_prompt + "\nIMPORTANT: Output strictly valid JSON."
+            res = model.generate_content([final_prompt, image_part])
             txt = res.text.replace("```json", "").replace("```", "")
             return json.loads(txt), None
         except Exception as e: return None, str(e)
@@ -197,23 +265,48 @@ def merge_ai_data_to_row(row_data, ai_data, config):
     for col in config['headers']:
         rule = mapping.get(col, {'source': 'BLANK'})
         val = ""
-        if rule['source'] == 'INPUT': val = row_data.get(col, "")
-        elif rule['source'] == 'FIXED': val = rule['value']
+        
+        # 1. INPUT SOURCE
+        if rule['source'] == 'INPUT': 
+            val = row_data.get(col, "")
+            
+        # 2. FIXED SOURCE
+        elif rule['source'] == 'FIXED': 
+            val = rule['value']
+            
+        # 3. AI SOURCE
         elif rule['source'] == 'AI' and ai_data:
-            if col in ai_data: val = ai_data[col]
+            # Attempt A: Exact key match
+            if col in ai_data: 
+                val = ai_data[col]
             else: 
+                # Attempt B: Loose key match (ignore case/spaces)
                 clean_col = col.lower().replace(" ", "").replace("_", "")
                 for k,v in ai_data.items():
-                    if k.lower().replace(" ", "") in clean_col: val = v; break
+                    if k.lower().replace(" ", "") in clean_col: 
+                        val = v; break
+            
+            # --- CRITICAL: ENFORCE MASTER DATA ---
             m_list = []
+            # Find the master data list associated with this column
             for mc, opts in config['master_data'].items():
-                if mc.lower() in col.lower(): m_list = opts; break
-            if m_list and val: val = enforce_master_data_fallback(val, m_list)
+                if mc.lower().strip() == col.lower().strip() or mc.lower() in col.lower(): 
+                    m_list = opts; break
+            
+            if m_list and val: 
+                val = enforce_master_data_fallback(val, m_list)
+                
+        # 4. FORMATTING
         if isinstance(val, (list, tuple)): val = ", ".join(map(str, val))
         elif isinstance(val, dict): val = json.dumps(val)
+        
         val = str(val).strip()
-        if rule.get('max_len'): val = smart_truncate(val, int(float(rule['max_len'])))
+        
+        if rule.get('max_len'): 
+            val = smart_truncate(val, int(float(rule['max_len'])))
+            
         new_row[col] = val
+        
     return new_row
 
 def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode, active_kws, selected_mp):
@@ -244,7 +337,9 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     for attempt in range(2):
         try:
             ai_data, err = analyze_image_multimodal(base64_img, hints, active_kws, config, selected_mp, arch_mode, clients)
-            if err: time.sleep(2); continue
+            if err: 
+                time.sleep(2) # Backoff
+                continue
             break
         except Exception as e: err = str(e)
 
@@ -264,6 +359,7 @@ def estimate_cost(engine_mode, num_skus):
     elif "Eagle-Eye" in engine_mode: active_rate = rates["Eagle-Eye"]
     elif "Dual-AI" in engine_mode: active_rate = rates["Dual-AI"]
     elif "Standard" in engine_mode: active_rate = rates["Gemini"]
+    elif "Logic" in engine_mode: active_rate = rates["GPT"]
     
     total = active_rate * num_skus
     bench = rates["GPT"] * num_skus
