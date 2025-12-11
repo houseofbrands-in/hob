@@ -130,3 +130,33 @@ def get_all_marketplaces():
         return combined
     except:
         return defaults
+# --- PHASE 1: HUMAN-IN-THE-LOOP LOGGING ---
+def log_training_data(marketplace, corrections_list):
+    """
+    Saves user corrections to a 'Training_Data' sheet.
+    corrections_list = [{'img_url': '...', 'col': 'Fabric', 'ai_value': 'Cotton', 'human_value': 'Polyester'}]
+    """
+    try:
+        # Check if sheet exists, if not, creates a header (soft check)
+        ws = get_worksheet_object("Training_Data")
+        
+        # Prepare rows
+        rows_to_append = []
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        for item in corrections_list:
+            rows_to_append.append([
+                timestamp, 
+                marketplace, 
+                item['img_url'], 
+                item['col'], 
+                str(item['ai_value']), 
+                str(item['human_value'])
+            ])
+            
+        if rows_to_append:
+            ws.append_rows(rows_to_append)
+            return True, len(rows_to_append)
+        return False, 0
+    except Exception as e:
+        return False, str(e)
