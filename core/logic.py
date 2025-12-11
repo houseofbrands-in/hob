@@ -395,88 +395,71 @@ def estimate_cost(engine_mode, num_skus):
     
     return total_cost, benchmark_cost, savings
 
-# --- PHASE 3: THE AI STUDIO (HYBRID ENDPOINT FIX) ---
+# --- PHASE 3: THE AI STUDIO (FAIL-SAFE VERSION) ---
 def generate_ai_background(prompt, _unused_client=None):
     """
-    Generates a background image using OpenRouter.
-    Tries multiple endpoints (Chat vs Image) and multiple Model IDs.
+    Generates a background image.
+    Strategy 1: OpenRouter (Flux Schnell) via Chat Endpoint.
+    Strategy 2: Pollinations.ai (No Key Required, Guaranteed Fallback).
     """
-    if "OPENROUTER_API_KEY" not in st.secrets:
-        return None, "Missing OPENROUTER_API_KEY in secrets."
-
-    api_key = st.secrets["OPENROUTER_API_KEY"]
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://hob-os-app.com",
-        "X-Title": "HOB OS"
-    }
-
-    # Strategy: List of (Model ID, Endpoint Type) tuples
-    # Type 'chat': Expects messages array, returns markdown URL
-    # Type 'image': Expects prompt string, returns url in data object
-    candidates = [
-        ("black-forest-labs/flux-1-schnell:free", "chat"), # Try Free Flux via Chat
-        ("black-forest-labs/flux-1-schnell", "chat"),      # Try Paid Flux via Chat
-        ("stabilityai/stable-diffusion-3-medium", "image"), # Try SD3 via Image Endpoint
-        ("openai/dall-e-3", "image"),                       # Try DALL-E 3 (if credits exist)
-    ]
-
-    last_error = None
-
-    for model_id, endpoint_type in candidates:
+    import urllib.parse
+    
+    # --- STRATEGY 1: OPENROUTER (High Quality) ---
+    if "OPENROUTER_API_KEY" in st.secrets:
         try:
-            # --- STRATEGY A: CHAT COMPLETION ENDPOINT ---
-            if endpoint_type == "chat":
-                url = "https://openrouter.ai/api/v1/chat/completions"
-                payload = {
-                    "model": model_id,
-                    "messages": [{
-                        "role": "user",
-                        "content": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
-                    }]
-                }
-                
-                res = requests.post(url, headers=headers, json=payload, timeout=45)
-                
-                if res.status_code == 200:
-                    content = res.json()['choices'][0]['message']['content']
-                    # Extract URL from markdown or raw text
-                    if "(" in content and ")" in content:
-                        image_url = content[content.find("(")+1:content.find(")")]
-                    else:
-                        image_url = content.strip()
-                    
-                    if image_url.startswith("http"): return image_url, None
-                else:
-                    last_error = f"Chat Error ({model_id}): {res.text}"
-
-            # --- STRATEGY B: IMAGE GENERATION ENDPOINT ---
-            elif endpoint_type == "image":
-                # Note: OpenRouter supports OpenAI-compatible /images/generations for some models
-                url = "https://openrouter.ai/api/v1/images/generations"
-                payload = {
-                    "model": model_id,
-                    "prompt": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic",
-                    "n": 1,
-                    "size": "1024x1024"
-                }
-                
-                res = requests.post(url, headers=headers, json=payload, timeout=45)
-                
-                if res.status_code == 200:
-                    data = res.json()
-                    # Standard OpenAI Image Response format
-                    if 'data' in data and len(data['data']) > 0:
-                        return data['data'][0]['url'], None
-                else:
-                    last_error = f"Image Error ({model_id}): {res.text}"
-
-        except Exception as e:
-            last_error = str(e)
-            continue
+            api_key = st.secrets["OPENROUTER_API_KEY"]
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://hob-os-app.com",
+                "X-Title": "HOB OS"
+            }
+            # Try the specific Free Tier ID for Flux
+            model_id = "black-forest-labs/flux-1-schnell:free"
             
-    return None, f"All strategies failed. Last Error: {last_error}"
+            payload = {
+                "model": model_id,
+                "messages": [{
+                    "role": "user",
+                    "content": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
+                }]
+            }
+            
+            res = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=25
+            )
+            
+            if res.status_code == 200:
+                content = res.json()['choices'][0]['message']['content']
+                if "(" in content and ")" in content:
+                    return content[content.find("(")+1:content.find(")")], None
+                if content.strip().startswith("http"):
+                    return content.strip(), None
+            else:
+                print(f"DEBUG: OpenRouter failed ({res.status_code}). Switching to Fallback.")
+                
+        except Exception as e:
+            print(f"DEBUG: OpenRouter Error: {e}")
+
+    # --- STRATEGY 2: POLLINATIONS.AI (Guaranteed Fallback) ---
+    # This works without an API key and is excellent for demos.
+    try:
+        encoded_prompt = urllib.parse.quote(f"product photography background, {prompt}, bokeh, soft lighting, 8k, photorealistic")
+        # Generate a direct URL. Pollinations generates on-the-fly when this URL is requested.
+        fallback_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
+        
+        # Verify it actually works (Head request)
+        check = requests.head(fallback_url)
+        if check.status_code < 400:
+            return fallback_url, None
+            
+    except Exception as e:
+        return None, f"All strategies failed. Fallback error: {str(e)}"
+
+    return None, "All generation strategies exhausted."
     
 # --- COMPOSITING ---
 def composite_product(product_img, bg_url):
