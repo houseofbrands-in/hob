@@ -394,58 +394,66 @@ def estimate_cost(engine_mode, num_skus):
     
     return total_cost, benchmark_cost, savings
 
-# --- PHASE 3: THE AI STUDIO (CONNECTION FIX) ---
+# --- PHASE 3: THE AI STUDIO (BRUTE FORCE REQUESTS) ---
 def generate_ai_background(prompt, _unused_client=None):
     """
-    Generates a background image using OpenRouter.
-    Creates a FRESH connection to ensure we hit OpenRouter, not OpenAI.
+    Generates a background image using a direct HTTP request to OpenRouter.
+    Bypasses the OpenAI library entirely to prevent routing errors.
     """
-    # 1. Force a clean connection to OpenRouter
-    try:
-        if "OPENROUTER_API_KEY" not in st.secrets:
-            return None, "Missing OPENROUTER_API_KEY in secrets."
-            
-        # Create a dedicated client just for this function
-        or_client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=st.secrets["OPENROUTER_API_KEY"],
-        )
-    except Exception as e:
-        return None, f"Client Init Error: {str(e)}"
+    if "OPENROUTER_API_KEY" not in st.secrets:
+        return None, "Missing OPENROUTER_API_KEY in secrets."
 
-    # 2. Priority Model List (Free & Paid mix)
-    # We try them in order. If one fails, we try the next.
+    api_key = st.secrets["OPENROUTER_API_KEY"]
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://hob-os-app.com",
+        "X-Title": "HOB OS"
+    }
+
+    # Priority Model List
     candidate_models = [
-        "black-forest-labs/flux-1-schnell",      # Top Choice
-        "black-forest-labs/flux-1-dev",          # High Quality
-        "stabilityai/stable-diffusion-xl-base-1.0", # Reliable Fallback
-        "google/gemini-2.0-flash-exp:free"       # Free Tier Fallback
+        "black-forest-labs/flux-1-schnell",
+        "black-forest-labs/flux-1-dev",
+        "stabilityai/stable-diffusion-xl-base-1.0"
     ]
-    
+
     last_error = None
-    
+
     for model_id in candidate_models:
         try:
-            # 3. Construct Prompt
-            full_prompt = f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
-            
-            # 4. Make the API Call
-            # We add headers to identify the app (good practice for OpenRouter)
-            response = or_client.chat.completions.create(
-                model=model_id,
-                messages=[{"role": "user", "content": full_prompt}],
-                extra_headers={
-                    "HTTP-Referer": "https://hob-os-app.com",
-                    "X-Title": "HOB OS"
-                }
+            payload = {
+                "model": model_id,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
+                    }
+                ]
+            }
+
+            # Direct POST to OpenRouter
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=45 # Give image gen time
             )
+
+            # Check for HTTP errors
+            if response.status_code != 200:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                print(f"DEBUG: Failed {model_id} -> {error_msg}")
+                last_error = error_msg
+                continue
+
+            # Parse Response
+            data = response.json()
+            content = data['choices'][0]['message']['content']
             
-            # 5. Extract Image URL
-            content = response.choices[0].message.content
+            # Extract Image URL
             image_url = ""
-            
-            # Handle Markdown links vs Raw URLs
-            if "(" in content and ")" in content: # ![Image](https://...)
+            if "(" in content and ")" in content:
                 start = content.find("(") + 1
                 end = content.find(")")
                 image_url = content[start:end]
@@ -453,15 +461,15 @@ def generate_ai_background(prompt, _unused_client=None):
                 image_url = content.strip()
 
             if image_url.startswith("http"):
-                return image_url, None 
+                return image_url, None
             
         except Exception as e:
-            # Log error internally and try next model
             last_error = str(e)
             continue
             
-    return None, f"All models failed. Last Error: {last_error}" 
-def composite_product(product_img, bg_url):
+    return None, f"All models failed. Last Error: {last_error}"
+    
+    def composite_product(product_img, bg_url):
     """
     1. Removes BG from product.
     2. Downloads AI Background.
