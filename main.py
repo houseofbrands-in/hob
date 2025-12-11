@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import time
+import zipfile  # <--- WAS MISSING
+from PIL import Image, ImageOps # <--- WAS MISSING
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -8,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ui.styles import load_custom_css
 import core.database as db
 import core.logic as logic
-import ui.components as ui 
+import ui.components as ui
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="HOB OS - Enterprise", layout="wide", page_icon="⚡")
