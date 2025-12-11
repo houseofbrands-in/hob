@@ -574,7 +574,7 @@ else:
                 else:
                     with st.spinner("🎨 Removing background & hallucinating new world..."):
                         # 1. Generate Background URL
-                        bg_url, err = logic.generate_ai_background(scene_prompt, clients[2]) # clients[2] is OpenRouter
+                        bg_url, err = logic.generate_ai_background(scene_prompt)
                         
                         if bg_url:
                             # 2. Composite
