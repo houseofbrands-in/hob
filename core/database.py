@@ -1,9 +1,11 @@
 import streamlit as st
 import json
+import time  # <--- ADD THIS LINE
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 SHEET_NAME = "Testing_Agency_OS_Database"
+# ... rest of the file
 
 @st.cache_resource
 def init_connection():
