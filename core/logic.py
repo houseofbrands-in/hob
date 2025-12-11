@@ -90,12 +90,10 @@ def retry_with_backoff(func, retries=3, delay=2, backoff=2, *args, **kwargs):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            # If it's the last attempt, raise the error
             if i == retries - 1:
                 raise e
-            # Otherwise, wait and increase delay
             time.sleep(delay)
-            delay *= backoff  # Increase wait time (2s -> 4s -> 8s)
+            delay *= backoff
 
 def run_lyra_optimization(model_choice, raw_instruction, client, gemini_avail):
     lyra_system_prompt = "You are Lyra, a master-level AI prompt optimization specialist..."
@@ -178,7 +176,18 @@ def analyze_image_multimodal(base64_image, user_hints, keywords, config, marketp
             image_part = {"mime_type": "image/jpeg", "data": img_data}
             res = model.generate_content([system_prompt, image_part])
             maker_draft = json.loads(res.text.replace("```json", "").replace("```", ""))
-            audit_prompt = f"Review Draft: {json.dumps(maker_draft)}. Constraints: {json.dumps(strict_constraints)}. Output JSON."
+            
+            # --- FIXED PROMPT: SYNONYM MAPPING ---
+            audit_prompt = f"""
+            Review this JSON draft against the allowed options.
+            
+            RULE 1: Map synonyms! If the Draft says 'Sleeveless' but the Allowed List has 'No Sleeves', change it to 'No Sleeves'.
+            RULE 2: Output MUST match the Allowed List exactly.
+            
+            DRAFT: {json.dumps(maker_draft)}
+            ALLOWED LISTS: {json.dumps(strict_constraints)}
+            """
+            
             response = gpt_c.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "user", "content": [{"type": "text", "text": audit_prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
@@ -238,7 +247,6 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     sku_label = str(row_data.get(sku_col, "Unknown SKU"))
     result_package = {"success": False, "sku": sku_label, "u_key": u_key, "img_display": None, "ai_data": {}, "final_row": {}, "error": None}
     
-    # 1. Download Image
     download_url = u_key 
     if "dropbox.com" in download_url: download_url = download_url.replace("?dl=0", "") + "&dl=1"
     
@@ -259,25 +267,21 @@ def process_row_workflow(row_data, img_col, sku_col, config, clients, arch_mode,
     hints = smart_truncate(hints, 300)
 
     # 2. AI Analysis WITH RETRY LOGIC
-    # We define a task function to pass to the retrier
     def run_ai_task():
         data, err_msg = analyze_image_multimodal(base64_img, hints, active_kws, config, selected_mp, arch_mode, clients)
         if err_msg:
-            raise Exception(err_msg) # Force exception so retry logic catches it
+            raise Exception(err_msg) 
         if not data:
             raise Exception("Empty Data Returned")
         return data
 
     try:
-        # Try 3 times, starting with 2s delay, doubling each time (2s, 4s, 8s)
         ai_data = retry_with_backoff(run_ai_task, retries=3, delay=2, backoff=2)
-        
         result_package["ai_data"] = ai_data
         result_package["success"] = True
         result_package["final_row"] = merge_ai_data_to_row(row_data, ai_data, config)
         
     except Exception as final_err:
-        # If all retries fail, capture the error
         result_package["error"] = str(final_err)
 
     return result_package
@@ -297,12 +301,10 @@ def estimate_cost(engine_mode, num_skus):
 
 # --- PHASE 3: AI STUDIO (FINAL ROBUST) ---
 def generate_ai_background(prompt, _unused_client=None):
-    # 1. OpenRouter Flux
     if "OPENROUTER_API_KEY" in st.secrets:
         try:
             api_key = st.secrets["OPENROUTER_API_KEY"]
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "HTTP-Referer": "https://hob-os.com", "X-Title": "HOB"}
-            # Specific free model ID
             model_id = "black-forest-labs/flux-1-schnell:free" 
             payload = {"model": model_id, "messages": [{"role": "user", "content": f"product photography background, {prompt}"}]}
             res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25)
@@ -312,7 +314,6 @@ def generate_ai_background(prompt, _unused_client=None):
                 if content.strip().startswith("http"): return content.strip(), None
         except: pass
 
-    # 2. Pollinations Fallback
     try:
         safe_prompt = urllib.parse.quote(f"product photography background {prompt}")
         poll_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&nologo=true&seed={int(time.time())}"
@@ -322,19 +323,12 @@ def generate_ai_background(prompt, _unused_client=None):
 
 def composite_product(product_img, bg_url):
     try:
-        # A. FORCE RGBA MODE
         product_img = product_img.convert("RGBA")
-
-        # B. CHECK DEPENDENCY
         if not REMBG_AVAILABLE:
-            # RETURN THE ACTUAL IMPORT ERROR
             return None, f"Server Error: rembg failed to load. Details: {REMBG_ERROR}"
 
-        # C. EXECUTE REMOVAL
         try:
             product_img = remove_bg_ai(product_img)
-            
-            # Verify transparency
             extrema = product_img.getextrema()
             if extrema and len(extrema) > 3:
                 alpha_stats = extrema[3]
@@ -343,7 +337,6 @@ def composite_product(product_img, bg_url):
         except Exception as bg_err:
             return None, f"Background Removal Crashed: {str(bg_err)}"
 
-        # D. Download Background
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
         session = requests.Session()
         bg_response = session.get(bg_url, headers=headers, timeout=25, stream=True)
@@ -356,7 +349,6 @@ def composite_product(product_img, bg_url):
             except:
                 bg_img = Image.new('RGBA', (1024, 1024), (200, 200, 200, 255))
 
-        # E. Resize & Composite
         bg_img = bg_img.resize((1024, 1024))
         p_w, p_h = product_img.size
         target_h = int(1024 * 0.7)
