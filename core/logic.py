@@ -395,11 +395,11 @@ def estimate_cost(engine_mode, num_skus):
     
     return total_cost, benchmark_cost, savings
 
-# --- PHASE 3: THE AI STUDIO (BRUTE FORCE REQUESTS) ---
+# --- PHASE 3: THE AI STUDIO (HYBRID ENDPOINT FIX) ---
 def generate_ai_background(prompt, _unused_client=None):
     """
-    Generates a background image using a direct HTTP request to OpenRouter.
-    Bypasses the OpenAI library entirely to prevent routing errors.
+    Generates a background image using OpenRouter.
+    Tries multiple endpoints (Chat vs Image) and multiple Model IDs.
     """
     if "OPENROUTER_API_KEY" not in st.secrets:
         return None, "Missing OPENROUTER_API_KEY in secrets."
@@ -412,64 +412,72 @@ def generate_ai_background(prompt, _unused_client=None):
         "X-Title": "HOB OS"
     }
 
-    # Priority Model List
-    candidate_models = [
-        "black-forest-labs/flux-1-schnell",
-        "black-forest-labs/flux-1-dev",
-        "stabilityai/stable-diffusion-xl-base-1.0"
+    # Strategy: List of (Model ID, Endpoint Type) tuples
+    # Type 'chat': Expects messages array, returns markdown URL
+    # Type 'image': Expects prompt string, returns url in data object
+    candidates = [
+        ("black-forest-labs/flux-1-schnell:free", "chat"), # Try Free Flux via Chat
+        ("black-forest-labs/flux-1-schnell", "chat"),      # Try Paid Flux via Chat
+        ("stabilityai/stable-diffusion-3-medium", "image"), # Try SD3 via Image Endpoint
+        ("openai/dall-e-3", "image"),                       # Try DALL-E 3 (if credits exist)
     ]
 
     last_error = None
 
-    for model_id in candidate_models:
+    for model_id, endpoint_type in candidates:
         try:
-            payload = {
-                "model": model_id,
-                "messages": [
-                    {
+            # --- STRATEGY A: CHAT COMPLETION ENDPOINT ---
+            if endpoint_type == "chat":
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                payload = {
+                    "model": model_id,
+                    "messages": [{
                         "role": "user",
                         "content": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
-                    }
-                ]
-            }
+                    }]
+                }
+                
+                res = requests.post(url, headers=headers, json=payload, timeout=45)
+                
+                if res.status_code == 200:
+                    content = res.json()['choices'][0]['message']['content']
+                    # Extract URL from markdown or raw text
+                    if "(" in content and ")" in content:
+                        image_url = content[content.find("(")+1:content.find(")")]
+                    else:
+                        image_url = content.strip()
+                    
+                    if image_url.startswith("http"): return image_url, None
+                else:
+                    last_error = f"Chat Error ({model_id}): {res.text}"
 
-            # Direct POST to OpenRouter
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=45 # Give image gen time
-            )
+            # --- STRATEGY B: IMAGE GENERATION ENDPOINT ---
+            elif endpoint_type == "image":
+                # Note: OpenRouter supports OpenAI-compatible /images/generations for some models
+                url = "https://openrouter.ai/api/v1/images/generations"
+                payload = {
+                    "model": model_id,
+                    "prompt": f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic",
+                    "n": 1,
+                    "size": "1024x1024"
+                }
+                
+                res = requests.post(url, headers=headers, json=payload, timeout=45)
+                
+                if res.status_code == 200:
+                    data = res.json()
+                    # Standard OpenAI Image Response format
+                    if 'data' in data and len(data['data']) > 0:
+                        return data['data'][0]['url'], None
+                else:
+                    last_error = f"Image Error ({model_id}): {res.text}"
 
-            # Check for HTTP errors
-            if response.status_code != 200:
-                error_msg = f"HTTP {response.status_code}: {response.text}"
-                print(f"DEBUG: Failed {model_id} -> {error_msg}")
-                last_error = error_msg
-                continue
-
-            # Parse Response
-            data = response.json()
-            content = data['choices'][0]['message']['content']
-            
-            # Extract Image URL
-            image_url = ""
-            if "(" in content and ")" in content:
-                start = content.find("(") + 1
-                end = content.find(")")
-                image_url = content[start:end]
-            else:
-                image_url = content.strip()
-
-            if image_url.startswith("http"):
-                return image_url, None
-            
         except Exception as e:
             last_error = str(e)
             continue
             
-    return None, f"All models failed. Last Error: {last_error}"
-
+    return None, f"All strategies failed. Last Error: {last_error}"
+    
 # --- COMPOSITING ---
 def composite_product(product_img, bg_url):
     """
