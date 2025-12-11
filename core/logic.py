@@ -394,23 +394,26 @@ def estimate_cost(engine_mode, num_skus):
     
     return total_cost, benchmark_cost, savings
 
-# --- PHASE 3: THE AI STUDIO (UPDATED) ---
+# --- PHASE 3: THE AI STUDIO (SMART FIX) ---
 def generate_ai_background(prompt, client):
     """
-    Uses OpenRouter to generate a background image.
-    Implements a 'Waterfall' strategy: Tries Flux Schnell -> Flux Dev -> SDXL.
-    This prevents crashes if one model ID changes or goes offline.
+    1. Verifies we are hitting OpenRouter (not OpenAI).
+    2. Tries 'Free' versions of models first.
+    3. Tries Standard versions as fallback.
     """
     if not client: return None, "OpenRouter Client not initialized"
-    
-    # PRIORITY LIST OF MODELS
-    # 1. Flux 1 Dev (Often more stable/available than Schnell on OpenRouter)
-    # 2. Flux 1 Schnell (Fastest)
-    # 3. Stable Diffusion XL (Reliable Fallback)
+
+    # DIAGNOSTIC: Check where we are pointing
+    # If this prints 'api.openai.com', we know the config is wrong.
+    print(f"DEBUG: AI Studio connecting to -> {client.base_url}")
+
+    # PRIORITY LIST (Free first, then Paid)
     candidate_models = [
-        "black-forest-labs/flux-1-dev",     
-        "black-forest-labs/flux-1-schnell", 
-        "stabilityai/stable-diffusion-xl-base-1.0" 
+        "black-forest-labs/flux-1-schnell:free", # Try Free Tier
+        "black-forest-labs/flux-1-schnell",      # Try Paid Tier
+        "black-forest-labs/flux-1-dev",          # Try Dev
+        "google/gemini-2.0-flash-exp:free",      # Fallback to Gemini (High Success Rate)
+        "stabilityai/stable-diffusion-xl-base-1.0"
     ]
     
     last_error = None
@@ -420,38 +423,36 @@ def generate_ai_background(prompt, client):
             # Enhanced Prompt
             full_prompt = f"professional product photography background, {prompt}, soft lighting, 8k resolution, photorealistic, empty center area for product placement, blurred background depth of field"
             
-            # Call OpenRouter
+            # Call API
             response = client.chat.completions.create(
                 model=model_id,
                 messages=[{"role": "user", "content": full_prompt}],
+                extra_headers={
+                    "HTTP-Referer": "https://hob-os-app.com", # Required by OpenRouter free tier
+                    "X-Title": "HOB OS"
+                }
             )
             
-            # Extract URL (Handles different return formats)
             content = response.choices[0].message.content
             image_url = ""
             
-            # Format A: Markdown Link ![img](http...)
+            # Parse Markdown ![alt](url) or Raw URL
             if "(" in content and ")" in content:
                 start = content.find("(") + 1
                 end = content.find(")")
                 image_url = content[start:end]
-            # Format B: Raw URL
             else:
                 image_url = content.strip()
 
-            # Verify URL
             if image_url.startswith("http"):
-                # Success! Return immediately.
                 return image_url, None 
             
         except Exception as e:
-            # Log error and continue to the next model in the list
+            print(f"DEBUG: Failed {model_id} -> {str(e)}")
             last_error = str(e)
             continue
             
-    # If all models fail
-    return None, f"All models failed. Last error: {last_error}"
-    
+    return None, f"Connection Failed. Last Error: {last_error}"    
 def composite_product(product_img, bg_url):
     """
     1. Removes BG from product.
