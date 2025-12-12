@@ -11,3 +11,4 @@ onnxruntime
 openpyxl
 xlsxwriter
 watchdog
+bcrypt
