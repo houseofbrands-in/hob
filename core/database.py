@@ -1,13 +1,13 @@
 import streamlit as st
 import json
-import time  # <--- ADD THIS LINE
+import time
 import gspread
-import bcrypt  # <--- NEW IMPORT
+import bcrypt  # <--- SECURE PASSWORD LIBRARY
 from oauth2client.service_account import ServiceAccountCredentials
 
 SHEET_NAME = "Testing_Agency_OS_Database"
-# ... rest of the file
 
+# --- CONNECTION ---
 @st.cache_resource
 def init_connection():
     try:
@@ -34,7 +34,7 @@ def get_worksheet_object(ws_name):
     gc = init_connection()
     return gc.open(SHEET_NAME).worksheet(ws_name)
 
-# --- SECURE AUTH ---
+# --- SECURE AUTH (BCRYPT) ---
 def check_login(username, password):
     """
     Verifies username and password against BCrypt hash.
@@ -56,17 +56,19 @@ def check_login(username, password):
                     if bcrypt.checkpw(password.encode('utf-8'), db_hash.encode('utf-8')):
                         return True, db_role
                 except ValueError:
-                    # Happens if the DB contains legacy plain text
-                    return False, "Security Update: Old password format detected. Ask Admin to reset."
-                    
+                    # This happens if you have OLD plain text passwords in the sheet.
+                    # Delete them and create new users.
+                    return False, "Security Update: Old password format detected. Reset Required."
     return False, None
 
 def create_user(username, password, role):
     try:
         ws = get_worksheet_object("Users")
-        existing = [r[0] for r in get_worksheet_data(SHEET_NAME, "Users")]
+        # Check existing
+        existing_rows = get_worksheet_data(SHEET_NAME, "Users")
+        existing_users = [r[0] for r in existing_rows[1:]] if len(existing_rows) > 1 else []
         
-        if username in existing: 
+        if username in existing_users: 
             return False, "User exists"
         
         # --- HASHING LOGIC ---
@@ -78,6 +80,56 @@ def create_user(username, password, role):
         return True, "User Created Successfully"
     except Exception as e: 
         return False, str(e)
+
+def get_all_users(): 
+    rows = get_worksheet_data(SHEET_NAME, "Users")
+    if len(rows) > 1:
+        headers = rows[0]
+        # Safety: Ensure row length matches header length to avoid zip errors
+        data = []
+        for r in rows[1:]:
+            if len(r) == len(headers):
+                data.append(dict(zip(headers, r)))
+            elif len(r) < len(headers):
+                # Pad missing columns (rare gsheet issue)
+                padded = r + [""] * (len(headers) - len(r))
+                data.append(dict(zip(headers, padded)))
+        return data
+    return []
+
+def delete_user(username):
+    """
+    Removes a user row from the 'Users' worksheet.
+    """
+    # 1. Safety Checks
+    if not username: return False, "No username selected."
+    if username.lower() == "admin": return False, "Cannot delete the root Admin."
+    
+    try:
+        ws = get_worksheet_object("Users")
+        
+        # 2. Find the row index
+        usernames_col = ws.col_values(1) 
+        try:
+            # list.index raises ValueError if not found. +1 for 1-based index
+            row_index = usernames_col.index(username) + 1 
+        except ValueError:
+            return False, "User not found in database."
+
+        # 3. Protect Header
+        if row_index == 1:
+            return False, "Cannot delete the Header row."
+
+        # 4. Execute Deletion
+        ws.delete_rows(row_index)
+        
+        # 5. Clear Cache
+        st.cache_data.clear()
+        
+        return True, f"User '{username}' permanently deleted."
+        
+    except Exception as e:
+        return False, f"GSheet Error: {str(e)}"
 
 # --- CONFIGS ---
 def get_categories_for_marketplace(marketplace):
@@ -129,42 +181,27 @@ def get_seo(marketplace, category):
             return row[2]
     return ""
 
-# --- NEW: DYNAMIC MARKETPLACES ---
+# --- DYNAMIC MARKETPLACES ---
 def get_all_marketplaces():
-    """
-    Fetches unique Marketplaces from the Configs sheet.
-    Merges them with a default list to ensure the app doesn't look empty on fresh install.
-    """
     defaults = ["Myntra", "Flipkart", "Ajio", "Amazon", "Nykaa"]
     try:
         rows = get_worksheet_data(SHEET_NAME, "Configs")
         if not rows: return defaults
-        
-        # Column 0 is Marketplace. Skip header (row 0).
         db_mps = []
         for r in rows[1:]:
             if r and len(r) > 0 and str(r[0]).strip() != "":
                 db_mps.append(str(r[0]).strip())
-        
-        # Combine defaults with DB values, remove duplicates, and sort
         combined = sorted(list(set(defaults + db_mps)))
         return combined
     except:
         return defaults
-# --- PHASE 1: HUMAN-IN-THE-LOOP LOGGING ---
+
+# --- LOGGING ---
 def log_training_data(marketplace, corrections_list):
-    """
-    Saves user corrections to a 'Training_Data' sheet.
-    corrections_list = [{'img_url': '...', 'col': 'Fabric', 'ai_value': 'Cotton', 'human_value': 'Polyester'}]
-    """
     try:
-        # Check if sheet exists, if not, creates a header (soft check)
         ws = get_worksheet_object("Training_Data")
-        
-        # Prepare rows
         rows_to_append = []
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        
         for item in corrections_list:
             rows_to_append.append([
                 timestamp, 
@@ -174,59 +211,18 @@ def log_training_data(marketplace, corrections_list):
                 str(item['ai_value']), 
                 str(item['human_value'])
             ])
-            
         if rows_to_append:
             ws.append_rows(rows_to_append)
             return True, len(rows_to_append)
         return False, 0
     except Exception as e:
         return False, str(e)
-# --- PHASE 2: FINANCIAL LOGGING ---
+
 def log_financials(marketplace, engine, skus, cost, savings):
     try:
         ws = get_worksheet_object("Usage_Ledger")
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        # Format: Time, MP, Engine, SKU_Count, Real_Cost, Savings
         ws.append_row([timestamp, marketplace, engine, skus, round(cost, 4), round(savings, 4)])
         return True
     except Exception as e:
         return False
-
-# --- APPEND TO core/database.py ---
-
-def delete_user(username):
-    """
-    Removes a user row from the 'Users' worksheet.
-    """
-    # 1. Safety Checks
-    if not username: return False, "No username selected."
-    if username.lower() == "admin": return False, "Cannot delete the root Admin."
-    
-    try:
-        ws = get_worksheet_object("Users")
-        
-        # 2. Find the row index
-        # We fetch only the first column to minimize API load and search safely
-        usernames_col = ws.col_values(1) 
-        
-        try:
-            # list.index raises ValueError if not found
-            # +1 because gspread rows are 1-indexed
-            row_index = usernames_col.index(username) + 1 
-        except ValueError:
-            return False, "User not found in database."
-
-        # 3. Protect Header
-        if row_index == 1:
-            return False, "Cannot delete the Header row."
-
-        # 4. Execute Deletion
-        ws.delete_rows(row_index)
-        
-        # 5. Clear Cache so the UI updates immediately
-        st.cache_data.clear()
-        
-        return True, f"User '{username}' permanently deleted."
-        
-    except Exception as e:
-        return False, f"GSheet Error: {str(e)}"
