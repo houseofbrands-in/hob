@@ -32,19 +32,42 @@ if not st.session_state.logged_in:
     st.markdown("<br><br>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,1.5,1])
     with c2:
-        with st.form("login_form"):
-            st.markdown("### ⚡ HOB OS Login")
-            user = st.text_input("Username")
-            pwd = st.text_input("Password", type="password")
-            if st.form_submit_button("Enter System", use_container_width=True, type="primary"):
-                is_valid, role = db.check_login(user, pwd)
-                if is_valid:
-                    st.session_state.logged_in = True
-                    st.session_state.username = user
-                    st.session_state.user_role = role
-                    st.rerun()
-                else: st.error("Access Denied")
-
+        # CHECK: Are there any users at all?
+        users = db.get_all_users()
+        
+        # SCENARIO A: SYSTEM INITIALIZATION (No Users)
+        if not users:
+            st.warning("⚠️ System Reset Detected: No Users Found")
+            with st.form("init_admin"):
+                st.markdown("### 🛡️ Create Root Admin")
+                new_u = st.text_input("Set Username")
+                new_p = st.text_input("Set Password", type="password")
+                if st.form_submit_button("Initialize System", type="primary"):
+                    if len(new_p) < 6:
+                        st.error("Password must be 6+ chars")
+                    else:
+                        ok, msg = db.create_user(new_u, new_p, "admin")
+                        if ok:
+                            st.success("Root Admin Created! Please Log In.")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                            
+        # SCENARIO B: NORMAL LOGIN
+        else:
+            with st.form("login_form"):
+                st.markdown("### ⚡ HOB OS Login")
+                user = st.text_input("Username")
+                pwd = st.text_input("Password", type="password")
+                if st.form_submit_button("Enter System", use_container_width=True, type="primary"):
+                    is_valid, role = db.check_login(user, pwd)
+                    if is_valid:
+                        st.session_state.logged_in = True
+                        st.session_state.username = user
+                        st.session_state.user_role = role
+                        st.rerun()
+                    else: st.error("Access Denied")
 # ==========================================
 # MAIN APP
 # ==========================================
