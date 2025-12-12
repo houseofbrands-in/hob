@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import time  # <--- ADD THIS LINE
 import gspread
+import bcrypt  # <--- NEW IMPORT
 from oauth2client.service_account import ServiceAccountCredentials
 
 SHEET_NAME = "Testing_Agency_OS_Database"
@@ -33,32 +34,50 @@ def get_worksheet_object(ws_name):
     gc = init_connection()
     return gc.open(SHEET_NAME).worksheet(ws_name)
 
-# --- AUTH ---
+# --- SECURE AUTH ---
 def check_login(username, password):
+    """
+    Verifies username and password against BCrypt hash.
+    """
     rows = get_worksheet_data(SHEET_NAME, "Users")
     if not rows: return False, None
+    
+    # Skip header
     for row in rows[1:]: 
         if len(row) >= 3:
-            if str(row[0]).strip() == username and str(row[1]).strip() == password:
-                return True, row[2]
+            db_user = str(row[0]).strip()
+            db_hash = str(row[1]).strip()
+            db_role = row[2]
+            
+            if db_user == username:
+                try:
+                    # Verify password against the stored hash
+                    # encode() converts string to bytes for bcrypt
+                    if bcrypt.checkpw(password.encode('utf-8'), db_hash.encode('utf-8')):
+                        return True, db_role
+                except ValueError:
+                    # Happens if the DB contains legacy plain text
+                    return False, "Security Update: Old password format detected. Ask Admin to reset."
+                    
     return False, None
 
 def create_user(username, password, role):
     try:
         ws = get_worksheet_object("Users")
         existing = [r[0] for r in get_worksheet_data(SHEET_NAME, "Users")]
-        if username in existing: return False, "User exists"
-        ws.append_row([username, password, role])
+        
+        if username in existing: 
+            return False, "User exists"
+        
+        # --- HASHING LOGIC ---
+        # Generate a salt and hash the password
+        hashed_pwd = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        ws.append_row([username, hashed_pwd, role])
         st.cache_data.clear()
-        return True, "Created"
-    except Exception as e: return False, str(e)
-
-def get_all_users(): 
-    rows = get_worksheet_data(SHEET_NAME, "Users")
-    if len(rows) > 1:
-        headers = rows[0]
-        return [dict(zip(headers, r)) for r in rows[1:]]
-    return []
+        return True, "User Created Successfully"
+    except Exception as e: 
+        return False, str(e)
 
 # --- CONFIGS ---
 def get_categories_for_marketplace(marketplace):
